@@ -1,0 +1,40 @@
+{
+  "branch": "main",
+  "components": 3,
+  "initial_version": "0.1.0",
+  "checks": [
+    [
+      "just",
+      "check"
+    ],
+    [
+      "just",
+      "build-docs"
+    ]
+  ],
+  "tools": [
+    "git",
+    "python3",
+    "just",
+    "swift",
+    "swiftformat",
+    "swiftlint"
+  ],
+  "stages": [
+    {
+      "files": [
+        "README.md"
+      ],
+      "commands": [
+        [
+          "python3",
+          "scripts/prepare_release.py",
+          "{version}"
+        ]
+      ],
+      "message": "chore: release {version}"
+    }
+  ],
+  "name": "ShortcutField",
+  "publication": "Version tag for Swift Package Manager consumers"
+}

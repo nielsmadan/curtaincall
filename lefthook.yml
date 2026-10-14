@@ -1,0 +1,18 @@
+pre-commit:
+  parallel: true
+  commands:
+    ruff-format:
+      glob: "*.py"
+      run: uv run --locked ruff format --check {staged_files}
+    ruff-lint:
+      glob: "*.py"
+      run: uv run --locked ruff check {staged_files}
+
+pre-push:
+  commands:
+    check:
+      run: just check
+      priority: 1
+    coverage:
+      run: just coverage
+      priority: 2

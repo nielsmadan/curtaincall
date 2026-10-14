@@ -1,0 +1,26 @@
+{
+  "branch": "main",
+  "components": 3,
+  "initial_version": "0.1.0",
+  "checks": [
+    [
+      "just",
+      "check"
+    ],
+    [
+      "just",
+      "build-docs"
+    ]
+  ],
+  "tools": [
+    "git",
+    "python3",
+    "just",
+    "swift",
+    "swiftformat",
+    "swiftlint"
+  ],
+  "stages": [],
+  "name": "ShortcutKit",
+  "publication": "Version tag for Swift Package Manager consumers"
+}

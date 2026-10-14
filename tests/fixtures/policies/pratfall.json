@@ -1,0 +1,27 @@
+{
+  "branch": "main",
+  "components": 3,
+  "initial_version": "0.1.0",
+  "checks": [
+    ["just", "check-static"],
+    ["just", "coverage"],
+    ["just", "build"]
+  ],
+  "tools": ["git", "python3", "just", "uv", "uvx"],
+  "stages": [
+    {
+      "files": ["pyproject.toml", "uv.lock", "CHANGELOG.md"],
+      "commands": [
+        ["python3", "scripts/prepare_release.py", "{version}"],
+        ["uv", "lock"],
+        ["uvx", "git-cliff@2.13.1", "--tag", "v{version}", "-o", "CHANGELOG.md"]
+      ],
+      "message": "chore: release {version}"
+    }
+  ],
+  "name": "Pratfall",
+  "repository": "nielsmadan/pratfall",
+  "workflow": "release.yml",
+  "suggest": ["uvx", "git-cliff@2.13.1", "--bumped-version"],
+  "publication": "GitHub release and Homebrew formula update"
+}

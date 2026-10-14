@@ -1,0 +1,21 @@
+{
+  "name": "Curtaincall",
+  "branch": "main",
+  "initial_version": "0.1.0",
+  "tag_prefix": "v",
+  "tools": ["git", "uv", "uvx", "just"],
+  "checks": [["just", "check"]],
+  "stages": [
+    {
+      "files": ["pyproject.toml", "uv.lock", "CHANGELOG.md"],
+      "commands": [
+        ["{python}", "scripts/prepare_release.py", "{version}"],
+        ["uv", "lock"],
+        ["just", "changelog", "{version}"]
+      ],
+      "checks": [["just", "check"], ["just", "build"], ["just", "check-package"]],
+      "message": "chore: release {version}"
+    }
+  ],
+  "publication": "Version tag pushed. No package publication workflow is configured."
+}

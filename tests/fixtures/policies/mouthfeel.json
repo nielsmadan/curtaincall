@@ -1,0 +1,47 @@
+{
+  "branch": "main",
+  "components": 3,
+  "initial_version": "0.9.0",
+  "checks": [
+    [
+      "npm",
+      "run",
+      "check"
+    ]
+  ],
+  "tools": [
+    "git",
+    "python3",
+    "npm"
+  ],
+  "stages": [
+    {
+      "files": [
+        "package.json",
+        "package-lock.json",
+        "dist"
+      ],
+      "commands": [
+        [
+          "npm",
+          "version",
+          "{version}",
+          "--no-git-tag-version",
+          "--ignore-scripts",
+          "--allow-same-version"
+        ],
+        [
+          "npm",
+          "run",
+          "check"
+        ]
+      ],
+      "message": "chore: release {version}"
+    }
+  ],
+  "name": "Mouthfeel",
+  "repository": "nielsmadan/mouthfeel",
+  "workflow": "release.yml",
+  "draft": true,
+  "publication": "Draft GitHub release with six archives, checksums, and the release inventory"
+}
