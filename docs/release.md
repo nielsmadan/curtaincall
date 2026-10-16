@@ -38,7 +38,7 @@ With `repository`/`workflow` configured, success prints GitHub tag/workflow link
 just release --dry-run
 just release             # first release: 1.0.0; later releases use commit messages
 # equivalent source command:
-uv run --locked curtains
+LEFTHOOK=0 uv run --locked curtains
 ```
 
 This uses the locked source environment, independent of a global `curtains` installation. [prepare_release.py](../scripts/prepare_release.py) validates the requested three-part version and exactly one manifest version in `[project]` before writing. The stage then runs `uv lock` and `just changelog VERSION`, updating only `pyproject.toml`, `uv.lock` and `CHANGELOG.md`. Preflight runs `just check-static` and `just coverage` on HEAD; the stage edits only those three files, and `just build` plus `just check-package` verify their effect on the package before the engine commits it. `just release` disables Lefthook for the engine's commits and push, since preflight already ran the same gates. The tag workflow reruns every gate on the tagged source before publishing.
@@ -63,4 +63,4 @@ If Actions fails after the tag was pushed, fix the workflow on `main` if needed 
 gh workflow run release.yml --ref main -f tag=v1.0.0
 ```
 
-Manual dispatch uses the workflow and publication helper from `main` while rebuilding the original tagged source. It never retags a newer commit. [release_workflow.py](../scripts/release_workflow.py) accepts an identical existing release, uploads only missing assets, and finishes a matching draft. It compares existing asset sizes and SHA-256 digests and refuses divergent notes, assets, prerelease state or moved tags. An immutable release missing assets also fails. Inspect the failed run and existing release before repairing anything; rerunning `just release` is not a publication retry.
+Manual dispatch uses the workflow and publication helper from `main` while rebuilding the original tagged source. It never retags a newer commit. [release_workflow.py](../scripts/release_workflow.py) accepts an identical existing release, uploads only missing assets, and finishes a matching draft. It compares existing asset sizes and SHA-256 digests and refuses divergent notes, assets, prerelease state or moved tags. A retry therefore depends on the rebuild being byte-identical: hatchling's wheel and sdist from the same commit are reproducible, so keep build-time inputs free of timestamps and host paths. An immutable release missing assets also fails. Inspect the failed run and existing release before repairing anything; rerunning `just release` is not a publication retry.
