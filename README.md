@@ -2,15 +2,17 @@
 
 `curtains` prepares local releases from a repository-owned JSON policy, creates an annotated tag, and atomically pushes the prepared branch and tag. Python 3.13+; macOS and Linux; no runtime dependencies.
 
-Install from this checkout with [uv](https://docs.astral.sh/uv/) and [Just](https://just.systems/):
+Install a release from [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases) with [uv](https://docs.astral.sh/uv/), substituting the latest version from the releases page:
 
 ```sh
-just install
+uv tool install https://github.com/nielsmadan/curtaincall/releases/download/v1.0.0/curtaincall-1.0.0-py3-none-any.whl
 curtains --help
 curtains --version
 ```
 
-`just install` installs a snapshot; rerun it after source changes, including changes at the same version. `just install-editable` tracks source edits immediately. `just uninstall` removes the tool. Ensure uv's tool executable directory is already on your PATH. These instructions use local source; they do not assume a PyPI publication.
+To upgrade, rerun `uv tool install --reinstall <new wheel URL>`; `uv tool upgrade` does not move a URL install. Ensure uv's tool executable directory is already on your PATH. Curtaincall is not published to PyPI.
+
+To install from this checkout, use [Just](https://just.systems/): `just install` installs a snapshot; rerun it after source changes, including changes at the same version. `just install-editable` tracks source edits immediately. `just uninstall` removes the tool.
 
 Curtaincall uses its own `just release` command. Its tag-triggered workflow publishes tested wheels and source archives to [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases). See [self-release and recovery](docs/release.md#releasing-curtaincall-itself) for the first release and workflow retries.
 

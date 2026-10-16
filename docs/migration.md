@@ -1,6 +1,6 @@
 # Migrating a release wrapper
 
-Install `curtains` from this checkout first. In a consumer, retain its release policy, preparation scripts, changelog configuration and tag-triggered publication CI. Replace only the local orchestration wrapper with `curtains`, keeping its command arguments explicit. Existing preflight and stage commands remain consumer-owned and still need their tools.
+Install `curtains` first (see the README). In a consumer, retain its release policy, preparation scripts, changelog configuration and tag-triggered publication CI. Replace only the local orchestration wrapper with `curtains`, keeping its command arguments explicit. Existing preflight and stage commands remain consumer-owned and still need their tools.
 
 A consumer's Just recipe can forward arguments:
 
