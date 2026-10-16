@@ -1,5 +1,7 @@
 {
   "name": "Curtaincall",
+  "repository": "nielsmadan/curtaincall",
+  "workflow": "release.yml",
   "branch": "main",
   "initial_version": "0.1.0",
   "tag_prefix": "v",
@@ -17,5 +19,5 @@
       "message": "chore: release {version}"
     }
   ],
-  "publication": "Version tag pushed. No package publication workflow is configured."
+  "publication": "GitHub Actions verifies the tagged source and publishes a GitHub release with wheel and source distribution assets."
 }

@@ -8,4 +8,4 @@ Keep the runtime standard-library-only. The CLI is the supported interface; ther
 
 Tests must use disposable repositories and local bare remotes. Packaging tests isolate tool/bin/cache/Python directories; never install globally or publish real refs during verification. `docs/development.md` explains the isolated development environment.
 
-This repository's AGENTS.md is hand-maintained; CLAUDE.md points here. There is no Loadout configuration to initialize or sync.
+This repository's AGENTS.md is hand-maintained and canonical. There is no Loadout configuration to initialize or sync.

@@ -11,6 +11,23 @@ requires-python = ">=3.13"
 license = "MIT"
 authors = [{ name = "Niels Madan" }]
 dependencies = []
+keywords = ["cli", "git", "releases", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
+[project.urls]
+Homepage = "https://github.com/nielsmadan/curtaincall"
+Repository = "https://github.com/nielsmadan/curtaincall"
+Issues = "https://github.com/nielsmadan/curtaincall/issues"
 
 [project.scripts]
 curtains = "curtaincall.cli:main"
@@ -68,5 +85,5 @@ strict = true
 packages = ["src/curtaincall"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/curtaincall", "tests", "scripts", "docs", "README.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "cliff.toml", "LICENSE", "pyproject.toml", "uv.lock", "Justfile", "lefthook.yml", ".python-version"]
+include = ["src/curtaincall", "tests", "scripts", "docs", ".github", "README.md", "AGENTS.md", "CHANGELOG.md", "cliff.toml", "LICENSE", "pyproject.toml", "uv.lock", "Justfile", "lefthook.yml", ".python-version"]
 exclude = ["docs/plans", "docs/longshot*"]

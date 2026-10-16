@@ -12,6 +12,10 @@ curtains --version
 
 `just install` installs a snapshot; rerun it after source changes, including changes at the same version. `just install-editable` tracks source edits immediately. `just uninstall` removes the tool. Ensure uv's tool executable directory is already on your PATH. These instructions use local source; they do not assume a PyPI publication.
 
+Curtaincall uses its own `just release` command. Its tag-triggered workflow publishes tested wheels and source archives to [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases). See [self-release and recovery](docs/release.md#releasing-curtaincall-itself) for the first release and workflow retries.
+
+For development, install [Lefthook](https://lefthook.dev/installation/) and run `just setup` after cloning. It installs locked development dependencies and Git hooks, then checks the checkout with `just doctor`. See [development](docs/development.md) for the validation commands.
+
 In the repository you want to release, add `scripts/release.json`:
 
 ```json

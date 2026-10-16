@@ -78,7 +78,9 @@ def test_cli_uses_script_repository_and_reports_errors(tmp_path: Path) -> None:
 def test_self_policy_targets_existing_release_commands() -> None:
     config = load_config(ROOT / "scripts/release.json")
     assert (config.branch, config.tag_prefix, config.initial_version) == ("main", "v", "0.1.0")
-    assert config.workflow is None
+    assert config.repository == "nielsmadan/curtaincall"
+    assert config.workflow == "release.yml"
+    assert (ROOT / ".github/workflows" / config.workflow).is_file()
     assert config.stages[0].files == ("pyproject.toml", "uv.lock", "CHANGELOG.md")
     assert config.stages[0].commands == (
         ("{python}", "scripts/prepare_release.py", "{version}"),
