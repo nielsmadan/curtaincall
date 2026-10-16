@@ -9,9 +9,10 @@ pre-commit:
       run: uv run --locked ruff check {staged_files}
 
 pre-push:
+  piped: true
   commands:
-    check:
-      run: just check
+    check-static:
+      run: just check-static
       priority: 1
     coverage:
       run: just coverage

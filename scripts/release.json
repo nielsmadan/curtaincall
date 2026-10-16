@@ -3,10 +3,10 @@
   "repository": "nielsmadan/curtaincall",
   "workflow": "release.yml",
   "branch": "main",
-  "initial_version": "0.1.0",
+  "initial_version": "1.0.0",
   "tag_prefix": "v",
   "tools": ["git", "uv", "uvx", "just"],
-  "checks": [["just", "check"]],
+  "checks": [["just", "check-static"], ["just", "coverage"]],
   "stages": [
     {
       "files": ["pyproject.toml", "uv.lock", "CHANGELOG.md"],
@@ -15,7 +15,7 @@
         ["uv", "lock"],
         ["just", "changelog", "{version}"]
       ],
-      "checks": [["just", "check"], ["just", "build"], ["just", "check-package"]],
+      "checks": [["just", "build"], ["just", "check-package"]],
       "message": "chore: release {version}"
     }
   ],

@@ -2,7 +2,7 @@
 
 Use Python 3.13+, Git 2.45+, uv, Just and Lefthook. `just setup` runs locked dependency synchronization, installs repository hooks, then runs doctor. `just doctor` checks tools, the environment and hook configuration/executables. Hook installation changes this checkout's hook setup.
 
-The [pre-commit hook](../lefthook.yml) checks formatting and lint on staged Python files. Pre-push runs `just check` followed by `just coverage`, including the coverage threshold. CLI installation through `just install` is separate from this contributor setup.
+The [pre-commit hook](../lefthook.yml) checks formatting and lint on staged Python files. Pre-push runs `just check-static` then `just coverage` (the whole non-packaging suite, including the coverage threshold), stopping at the first failure; `just release` skips the hooks. CLI installation through `just install` is separate from this contributor setup.
 
 Doctor resolves relative or empty `PATH` entries from the checkout root. Signed-history regression tests use `ssh-keygen` to create a temporary SSH signing key. Terminal cancellation tests kill and reap their child on timeout before closing the PTY.
 

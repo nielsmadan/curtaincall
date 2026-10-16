@@ -57,7 +57,7 @@ clean:
     @rm -rf dist build .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage coverage.xml
 
 release *args:
-    @uv run --locked curtains {{args}}
+    @LEFTHOOK=0 uv run --locked curtains {{args}}
 
 changelog version:
     @env UV_TOOL_DIR="$PWD/.uv/tools" UV_CACHE_DIR="$PWD/.uv/cache" UV_PYTHON_INSTALL_DIR="$PWD/.uv/python" uvx git-cliff@2.13.1 --config cliff.toml --tag 'v{{version}}' -o CHANGELOG.md

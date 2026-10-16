@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import sys
@@ -77,10 +78,12 @@ def test_cli_uses_script_repository_and_reports_errors(tmp_path: Path) -> None:
 
 def test_self_policy_targets_existing_release_commands() -> None:
     config = load_config(ROOT / "scripts/release.json")
-    assert (config.branch, config.tag_prefix, config.initial_version) == ("main", "v", "0.1.0")
+    assert (config.branch, config.tag_prefix, config.initial_version) == ("main", "v", "1.0.0")
     assert config.repository == "nielsmadan/curtaincall"
     assert config.workflow == "release.yml"
     assert (ROOT / ".github/workflows" / config.workflow).is_file()
+    assert config.checks == (("just", "check-static"), ("just", "coverage"))
+    assert config.stages[0].checks == (("just", "build"), ("just", "check-package"))
     assert config.stages[0].files == ("pyproject.toml", "uv.lock", "CHANGELOG.md")
     assert config.stages[0].commands == (
         ("{python}", "scripts/prepare_release.py", "{version}"),
@@ -88,9 +91,12 @@ def test_self_policy_targets_existing_release_commands() -> None:
         ("just", "changelog", "{version}"),
     )
     justfile = (ROOT / "Justfile").read_text()
-    for name in ("check", "build", "check-package", "changelog"):
-        assert f"\n{name}" in justfile
-    assert "uv run --locked curtains {{args}}" in justfile
+    for name in ("check", "check-static", "coverage", "build", "check-package", "changelog"):
+        assert re.search(rf"^{re.escape(name)}[: ]", justfile, re.MULTILINE)
+    assert "\n    @LEFTHOOK=0 uv run --locked curtains {{args}}\n" in justfile
+    lefthook = (ROOT / "lefthook.yml").read_text()
+    for line in ("run: just check-static", "run: just coverage", "piped: true"):
+        assert f"{line}\n" in lefthook
     assert "git-cliff@2.13.1" in justfile
     assert (ROOT / "cliff.toml").is_file()
 
