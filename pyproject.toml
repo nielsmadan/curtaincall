@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "curtaincall"
-version = "0.1.0"
+version = "1.0.0"
 description = "Policy-driven local release preparation and atomic Git publication."
 readme = "README.md"
 requires-python = ">=3.13"
