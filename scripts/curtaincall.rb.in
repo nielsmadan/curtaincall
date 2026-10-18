@@ -1,0 +1,37 @@
+class Curtaincall < Formula
+  include Language::Python::Virtualenv
+
+  desc "Policy-driven local release preparation and atomic Git publication"
+  homepage "https://github.com/nielsmadan/curtaincall"
+  url "https://github.com/nielsmadan/curtaincall/archive/refs/tags/v@VERSION@.tar.gz"
+  sha256 "@SHA256@"
+  license "MIT"
+  head "https://github.com/nielsmadan/curtaincall.git", branch: "main"
+
+  depends_on "git"
+  depends_on "python@3.13"
+
+  def install
+    virtualenv_install_with_resources
+  end
+
+  test do
+    assert_equal "curtains #{version}", shell_output("#{bin}/curtains --version").strip
+    %w[AUTHOR COMMITTER].each do |role|
+      ENV["GIT_#{role}_NAME"] = "Homebrew"
+      ENV["GIT_#{role}_EMAIL"] = "homebrew@example.com"
+    end
+    work = testpath/"work"
+    (work/"scripts").mkpath
+    (work/"scripts/release.json").write '{"name": "Example", "initial_version": "0.1.0"}'
+    cd work do
+      system "git", "init", "--initial-branch=main"
+      system "git", "add", "scripts/release.json"
+      system "git", "commit", "--message", "feat: add release policy"
+      system "git", "clone", "--bare", work, testpath/"origin.git"
+      system "git", "remote", "add", "origin", testpath/"origin.git"
+      system "git", "fetch", "origin"
+      assert_match "Example: first release -> v0.1.0", shell_output("#{bin}/curtains --dry-run")
+    end
+  end
+end

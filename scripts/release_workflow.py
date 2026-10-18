@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 SEMVER_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+FORMULA_TEMPLATE = Path(__file__).with_name("curtaincall.rb.in")
 
 
 class WorkflowError(Exception):
@@ -86,6 +87,12 @@ def project_metadata(tag: str, path: Path) -> str:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def render_formula(template: str, tag: str, sha256: str) -> str:
+    if version(tag) is None:
+        raise WorkflowError(f"Invalid release tag: {tag!r}")
+    return template.replace("@VERSION@", tag.removeprefix("v")).replace("@SHA256@", sha256)
 
 
 def _expected_assets(assets: Sequence[str]) -> dict[str, tuple[Path, int, str]]:
@@ -207,6 +214,10 @@ def main() -> None:
     metadata = subparsers.add_parser("project-metadata")
     metadata.add_argument("tag")
     metadata.add_argument("project", type=Path)
+    formula = subparsers.add_parser("formula")
+    formula.add_argument("tag")
+    formula.add_argument("archive", type=Path)
+    formula.add_argument("output", type=Path)
     publication = subparsers.add_parser("publish")
     publication.add_argument("tag")
     publication.add_argument("title")
@@ -219,6 +230,11 @@ def main() -> None:
         return
     if args.operation == "project-metadata":
         print(f"version={project_metadata(args.tag, args.project)}")
+        return
+    if args.operation == "formula":
+        template = FORMULA_TEMPLATE.read_text(encoding="utf-8")
+        content = render_formula(template, args.tag, _sha256(args.archive))
+        args.output.write_text(content, encoding="utf-8")
         return
     publish(args.tag, args.title, args.notes, args.target, args.assets)
 

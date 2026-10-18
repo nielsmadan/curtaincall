@@ -59,6 +59,7 @@ def test_distribution_contents(distributions: tuple[Path, Path], package_source:
             "scripts/doctor.py",
             "scripts/prepare_release.py",
             "scripts/release_workflow.py",
+            "scripts/curtaincall.rb.in",
             "scripts/release.json",
             ".github/workflows/release.yml",
             "README.md",

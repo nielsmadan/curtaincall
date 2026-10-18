@@ -2,19 +2,21 @@
 
 `curtains` prepares local releases from a repository-owned JSON policy, creates an annotated tag, and atomically pushes the prepared branch and tag. Python 3.13+; macOS and Linux; no runtime dependencies.
 
-Install a release from [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases) with [uv](https://docs.astral.sh/uv/), substituting the latest version from the releases page:
+Install with [Homebrew](https://brew.sh/):
 
 ```sh
-uv tool install https://github.com/nielsmadan/curtaincall/releases/download/v1.0.0/curtaincall-1.0.0-py3-none-any.whl
+brew install nielsmadan/tap/curtaincall
 curtains --help
 curtains --version
 ```
 
-To upgrade, rerun `uv tool install --reinstall <new wheel URL>`; `uv tool upgrade` does not move a URL install. Ensure uv's tool executable directory is already on your PATH. Curtaincall is not published to PyPI.
+Upgrade with `brew upgrade curtaincall`. The formula brings its own Python 3.13 and Git, since curtains needs Git 2.45+ and macOS ships an older one.
+
+Without Homebrew, install a release wheel from [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases) with [uv](https://docs.astral.sh/uv/), substituting the latest version: `uv tool install https://github.com/nielsmadan/curtaincall/releases/download/v1.0.0/curtaincall-1.0.0-py3-none-any.whl`. To upgrade, rerun `uv tool install --reinstall <new wheel URL>`; `uv tool upgrade` does not move a URL install. Ensure uv's tool executable directory is already on your PATH. Curtaincall is not published to PyPI.
 
 To install from this checkout, use [Just](https://just.systems/): `just install` installs a snapshot; rerun it after source changes, including changes at the same version. `just install-editable` tracks source edits immediately. `just uninstall` removes the tool.
 
-Curtaincall uses its own `just release` command. Its tag-triggered workflow publishes tested wheels and source archives to [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases). See [self-release and recovery](docs/release.md#releasing-curtaincall-itself) for the first release and workflow retries.
+Curtaincall uses its own `just release` command. Its tag-triggered workflow publishes tested wheels and source archives to [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases) and updates the Homebrew formula. See [self-release and recovery](docs/release.md#releasing-curtaincall-itself) for the first release and workflow retries.
 
 For development, install [Lefthook](https://lefthook.dev/installation/) and run `just setup` after cloning. It installs locked development dependencies and Git hooks, then checks the checkout with `just doctor`. See [development](docs/development.md) for the validation commands.
 

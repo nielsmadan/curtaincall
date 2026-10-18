@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -100,6 +101,29 @@ def test_manifest_validation_cli(tmp_path: Path, manifest: str, expected: str) -
     )
     assert result.returncode == (0 if expected.startswith("version=") else 1)
     assert expected in result.stdout + result.stderr
+
+
+def test_formula_cli_pins_tag_archive_and_digest(tmp_path: Path) -> None:
+    archive = tmp_path / "source.tar.gz"
+    archive.write_bytes(b"source")
+    output = tmp_path / "curtaincall.rb"
+    result = subprocess.run(
+        (sys.executable, str(SCRIPT), "formula", TAG, str(archive), str(output)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    formula = output.read_text()
+    url = "https://github.com/nielsmadan/curtaincall/archive/refs/tags/v1.2.3.tar.gz"
+    assert f'  url "{url}"\n' in formula
+    assert f'  sha256 "{hashlib.sha256(b"source").hexdigest()}"\n' in formula
+    assert re.search(r"@[A-Z0-9]+@", formula) is None
+
+
+def test_formula_rejects_invalid_tag() -> None:
+    with pytest.raises(workflow.WorkflowError, match="Invalid release tag"):
+        workflow.render_formula("@VERSION@", "v1.2", "0" * 64)
 
 
 @pytest.fixture
