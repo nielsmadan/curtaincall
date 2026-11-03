@@ -41,4 +41,6 @@ Use Git 2.45+ and an origin server supporting atomic pushes. Start on the config
 
 Policies can prepare manifests and changelogs in sequential stages. Commands and Git hooks are trusted code; file allowlists detect mistakes and are not a sandbox. Cancellation and failures preserve any artifacts already created. A failed push can have an unknown remote outcome: inspect refs before further action.
 
+In GitHub Actions, the `nielsmadan/curtaincall` action puts `curtains` on `PATH` for `curtains ci validate-tag`, `previous-tag` and `publish`; the action pin is the `curtains` version it installs; see [CI commands](docs/release.md#ci-commands) and [replacing a CI release helper](docs/migration.md#replacing-a-ci-release-helper).
+
 Read [configuration](docs/configuration.md) for the schema, [release behavior](docs/release.md) for prerequisites and recovery, and [migration](docs/migration.md) for the ten standalone policy examples. Contributors: [development](docs/development.md), [architecture](docs/architecture.md), and the [docs index](docs/overview.md).

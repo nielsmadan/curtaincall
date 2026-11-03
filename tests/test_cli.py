@@ -397,3 +397,54 @@ def test_dry_run_cli_skips_custom_commands(
     assert result.returncode == 0, result.stderr
     assert "Dry run" in result.stdout
     assert git_command(repository, ("tag", "--list"), git_environment) == ""
+
+
+def test_argv_from_process_routes_to_ci(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["curtains", "ci", "--help"])
+    with pytest.raises(SystemExit) as error:
+        main(None)
+    assert error.value.code == 0
+    assert "usage: curtains ci" in capsys.readouterr().out
+
+
+def test_help_names_ci_commands(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "curtains ci --help" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "arguments, expected",
+    [
+        (("ci", "--help"), "previous-tag"),
+        (("ci", "validate-tag", "--help"), "EVENT"),
+        (("ci", "previous-tag", "--help"), "--directory"),
+    ],
+)
+def test_ci_help_outside_repository(
+    tmp_path: Path, git_environment: dict[str, str], arguments: tuple[str, ...], expected: str
+) -> None:
+    result = invoke(tmp_path, git_environment, *arguments)
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
+
+
+def test_ci_without_command_is_usage_error(tmp_path: Path, git_environment: dict[str, str]) -> None:
+    result = invoke(tmp_path, git_environment, "ci")
+    assert result.returncode == 2
+    assert "usage: curtains ci" in result.stderr
+
+
+def test_ci_validate_tag_executable(repository: Path, git_environment: dict[str, str]) -> None:
+    configure(repository, git_environment)
+    git_command(repository, ("tag", "-a", "-m", "v0.1.0", "v0.1.0"), git_environment)
+    git_command(
+        repository,
+        ("push", "origin", "HEAD:refs/heads/main", "refs/tags/v0.1.0"),
+        git_environment,
+    )
+    head = git_command(repository, ("rev-parse", "HEAD"), git_environment)
+    result = invoke(repository, git_environment, "ci", "validate-tag", "v0.1.0", head.strip())
+    assert (result.returncode, result.stdout, result.stderr) == (0, head, "")

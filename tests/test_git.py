@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -8,13 +9,18 @@ import pytest
 
 from curtaincall.errors import ReleaseError
 from curtaincall.git import (
+    ProcessResult,
     _local_tags,
     _origin,
     changed_paths,
     command_environment,
     git_command,
+    git_process,
     inspect_repository,
+    matches_repository,
+    process_failure,
     resolve_location,
+    run_process,
 )
 from curtaincall.models import Command, ReleaseConfig
 from curtaincall.versions import make_proposal
@@ -701,3 +707,85 @@ def test_changed_paths_ignore_replacement_tree(
     git(repository, git_environment, "replace", head, changed)
     assert git(repository, git_environment, "diff", "--cached", "--name-only") == "tracked.txt"
     assert changed_paths(repository, git_environment) == frozenset()
+
+
+def test_run_process_returns_failure_without_raising(tmp_path: Path) -> None:
+    script = "import os, sys; os.write(1, b'out\\xff'); os.write(2, b'err'); sys.exit(3)"
+    result = run_process(tmp_path, (sys.executable, "-c", script), os.environ)
+    assert result == ProcessResult(3, os.fsdecode(b"out\xff"), "err")
+
+
+def test_run_process_passes_input(tmp_path: Path) -> None:
+    script = "import sys; sys.stdout.write(sys.stdin.read().upper())"
+    result = run_process(tmp_path, (sys.executable, "-c", script), os.environ, input_data=b"abc")
+    assert result == ProcessResult(0, "ABC", "")
+
+
+def test_run_process_reports_unrunnable_command(tmp_path: Path) -> None:
+    with pytest.raises(ReleaseError, match="Cannot run /no/such/executable"):
+        run_process(tmp_path, ("/no/such/executable",), os.environ)
+
+
+def test_git_process_reports_exit_code(repository: Path, git_environment: dict[str, str]) -> None:
+    result = git_process(
+        repository, ("rev-parse", "--verify", "--quiet", "refs/tags/absent"), git_environment
+    )
+    assert result == ProcessResult(1, "", "")
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/o/n",
+        "https://github.com/o/n.git",
+        "git@github.com:o/n.git",
+        "ssh://git@github.com/o/n",
+    ],
+)
+def test_matches_repository_accepts_github_forms(origin: str) -> None:
+    assert matches_repository(origin, "o/n")
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/o/n/extra",
+        "https://github.com/o/nn",
+        "https://user@github.com/o/n.git",
+        "https://github.com.evil/o/n",
+        "https://github.com/o/n.git.evil",
+        "/srv/o/n.git",
+    ],
+)
+def test_matches_repository_rejects_other_destinations(origin: str) -> None:
+    assert not matches_repository(origin, "o/n")
+
+
+@pytest.mark.parametrize(
+    "origin, repository, expected",
+    [
+        ("https://github.com/o/n.x", "o/n.x", True),
+        ("https://github.com/o/nzx", "o/n.x", False),
+        ("git@github.com:a_b/c-d.e.git", "a_b/c-d.e", True),
+        ("git@github.com:a_b/c-dXe.git", "a_b/c-d.e", False),
+        ("https://github.com/o/n\n", "o/n", False),
+        (" https://github.com/o/n", "o/n", False),
+    ],
+)
+def test_matches_repository_is_literal(origin: str, repository: str, expected: bool) -> None:
+    assert matches_repository(origin, repository) is expected
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (ProcessResult(1, "out\n", "err\n"), "gh release upload failed (1): err"),
+        (
+            ProcessResult(2, "https://user:token@host/x\n", ""),
+            "gh release upload failed (2): https://[redacted]@host/x",
+        ),
+        (ProcessResult(3, "", ""), "gh release upload failed (3)"),
+    ],
+)
+def test_process_failure_prefers_stderr_then_stdout(result: ProcessResult, expected: str) -> None:
+    assert process_failure("gh release upload", result) == expected

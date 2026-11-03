@@ -7,7 +7,15 @@ import pytest
 from curtaincall.cli import main
 from curtaincall.errors import ReleaseError
 from curtaincall.models import ChangeCounts, ReleaseConfig, ReleaseState
-from curtaincall.versions import count_changes, make_proposal, parse_version, select_version
+from curtaincall.versions import (
+    count_changes,
+    make_proposal,
+    parse_version,
+    previous_tag,
+    require_release_tag,
+    select_version,
+    tag_version,
+)
 
 
 def state(latest: str | None, *messages: str) -> ReleaseState:
@@ -172,3 +180,59 @@ def test_execution_error_is_reported(
 def test_huge_version_has_release_error(components: Literal[2, 3]) -> None:
     with pytest.raises(ReleaseError, match="too large"):
         parse_version("9" * 5000 + ".0" * (components - 1), components)
+
+
+def test_tag_version_selects_policy_namespace(config: ReleaseConfig) -> None:
+    assert tag_version("v1.10.0", config) == (1, 10, 0)
+    assert tag_version("rust-v1.0.0", config) is None
+    assert tag_version("v1.2", config) is None
+
+
+@pytest.mark.parametrize(
+    "tag", ["v1.2", "v01.2.3", "v1.2.3rc1", "v1.2.3\n", "--help", "rust-v1.0.0", "1.2.3"]
+)
+def test_require_release_tag_rejects_invalid_tags(config: ReleaseConfig, tag: str) -> None:
+    with pytest.raises(ReleaseError, match="Invalid release tag"):
+        require_release_tag(config, tag)
+
+
+def test_require_release_tag_returns_version(config: ReleaseConfig) -> None:
+    policy = replace(config, tag_prefix="python-v")
+    assert require_release_tag(policy, "python-v2.3.4") == (2, 3, 4)
+
+
+def test_previous_tag_ignores_other_namespaces(config: ReleaseConfig) -> None:
+    tags = (
+        "python-v1.9.0",
+        "python-v1.10.0",
+        "python-v2.0.0",
+        "python-v1.10.0-rc.1",
+        "rust-v1.11.0",
+        "v1.12.0",
+        "python-v01.11.0",
+        "python-v1.11",
+    )
+    policy = replace(config, tag_prefix="python-v")
+    assert previous_tag(policy, "python-v1.11.0", tags) == "python-v1.10.0"
+
+
+def test_previous_tag_two_part_policy(config: ReleaseConfig) -> None:
+    policy = replace(config, components=2, initial_version="0.1")
+    assert previous_tag(policy, "v1.10", ("v1.2", "v1.9", "v1.9.5", "v1.10", "v2.0")) == "v1.9"
+
+
+def test_previous_tag_requires_strictly_lower_version(config: ReleaseConfig) -> None:
+    assert previous_tag(config, "v1.0.0", ("v1.0.0", "v1.0.1", "v2.0.0")) is None
+    assert previous_tag(config, "v0.1.0", ()) is None
+
+
+def test_previous_tag_numeric_prefix(config: ReleaseConfig) -> None:
+    policy = replace(config, tag_prefix="1")
+    assert tag_version("11.2.0", policy) == (1, 2, 0)
+    assert tag_version("1.2.0", policy) is None
+    assert previous_tag(policy, "12.0.0", ("1.5.0", "10.9.0", "11.2.0", "13.0.0")) == "11.2.0"
+
+
+def test_previous_tag_rejects_unparseable_tag(config: ReleaseConfig) -> None:
+    with pytest.raises(ReleaseError, match=r"Invalid release tag: 'v1\.2'"):
+        previous_tag(config, "v1.2", ("v1.0.0",))

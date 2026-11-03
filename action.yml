@@ -1,0 +1,18 @@
+name: Curtaincall
+description: Install the curtains command for release validation and publication in CI.
+runs:
+  using: composite
+  steps:
+    - name: Set up Python for curtains
+      id: python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: "3.13"
+        update-environment: false
+    - name: Install curtains
+      shell: bash
+      env:
+        PYTHON: ${{ steps.python.outputs.python-path }}
+      run: |
+        "$PYTHON" -I "$GITHUB_ACTION_PATH/scripts/install_action.py" "$RUNNER_TEMP/curtaincall"
+        echo "$RUNNER_TEMP/curtaincall/bin" >> "$GITHUB_PATH"

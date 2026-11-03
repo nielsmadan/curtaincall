@@ -29,7 +29,7 @@ def help_text(directory: Path, environment: dict[str, str]) -> str:
 def change_description(source: Path, description: str) -> None:
     path = source / "src/curtaincall/cli.py"
     contents = path.read_text()
-    original = 'description="Prepare and publish a Git release."'
+    original = 'description="Prepare, tag and push a Git release."'
     assert original in contents
     path.write_text(contents.replace(original, f'description="{description}"'))
 
@@ -39,7 +39,7 @@ def test_snapshot_reinstall_editable_and_uninstall(
 ) -> None:
     recipe(package_source, package_environment, "install")
     original_help = help_text(package_root, package_environment)
-    assert "Prepare and publish a Git release." in original_help
+    assert "Prepare, tag and push a Git release." in original_help
     change_description(package_source, "Installed snapshot refreshed.")
     assert help_text(package_root, package_environment) == original_help
     recipe(package_source, package_environment, "install")

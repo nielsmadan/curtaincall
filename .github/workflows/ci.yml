@@ -74,3 +74,34 @@ jobs:
           name: distributions
           path: dist/*
           if-no-files-found: error
+
+  action:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record python3
+        id: before
+        run: echo "python3=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+      - name: Verify installed command
+        env:
+          PYTHON3_BEFORE: ${{ steps.before.outputs.python3 }}
+        run: |
+          set -x
+          test "$(command -v python3)" = "$PYTHON3_BEFORE"
+          case "$(command -v curtains)" in "$RUNNER_TEMP"/*) ;; *) exit 1 ;; esac
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
+          test "$(curtains --version)" = "curtains $version"
+          git -c user.name=ci -c user.email=ci@example.invalid tag -a -m smoke v1000.0.0
+          test "$(curtains ci previous-tag v1000.0.1)" = v1000.0.0
+      - name: Validate release tag
+        if: github.repository == 'nielsmadan/curtaincall'
+        run: curtains ci validate-tag v1.0.0

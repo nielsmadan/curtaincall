@@ -85,5 +85,5 @@ strict = true
 packages = ["src/curtaincall"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/curtaincall", "tests", "scripts", "docs", ".github", "README.md", "AGENTS.md", "CHANGELOG.md", "cliff.toml", "LICENSE", "pyproject.toml", "uv.lock", "Justfile", "lefthook.yml", ".python-version"]
+include = ["src/curtaincall", "tests", "scripts", "docs", ".github", "action.yml", "README.md", "AGENTS.md", "CHANGELOG.md", "cliff.toml", "LICENSE", "pyproject.toml", "uv.lock", "Justfile", "lefthook.yml", ".python-version"]
 exclude = ["docs/plans", "docs/longshot*"]

@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterable
 from typing import Final, Literal
 
 from curtaincall.errors import ReleaseError
@@ -19,6 +20,37 @@ def parse_version(value: str, components: Literal[2, 3]) -> Version:
         return tuple(int(part) for part in value.split("."))
     except ValueError as error:
         raise ReleaseError(f"Version component is too large: {value!r}.") from error
+
+
+def tag_version(name: str, config: ReleaseConfig) -> Version | None:
+    if not name.startswith(config.tag_prefix):
+        return None
+    try:
+        return parse_version(name[len(config.tag_prefix) :], config.components)
+    except ReleaseError:
+        return None
+
+
+def require_release_tag(config: ReleaseConfig, tag: str) -> Version:
+    parsed = tag_version(tag, config)
+    if parsed is None:
+        raise ReleaseError(f"Invalid release tag: {tag!r}")
+    return parsed
+
+
+def version_text(config: ReleaseConfig, tag: str) -> str:
+    require_release_tag(config, tag)
+    return tag[len(config.tag_prefix) :]
+
+
+def previous_tag(config: ReleaseConfig, tag: str, tags: Iterable[str]) -> str | None:
+    current = require_release_tag(config, tag)
+    candidates = [
+        (parsed, name)
+        for name in tags
+        if (parsed := tag_version(name, config)) is not None and parsed < current
+    ]
+    return max(candidates)[1] if candidates else None
 
 
 def _normalize_version(value: str, config: ReleaseConfig) -> str:
