@@ -96,6 +96,26 @@ def test_two_stage_revision_and_no_change(
     assert git(repository, git_environment, "status", "--porcelain") == ""
 
 
+def test_tag_placeholders(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    code = "from pathlib import Path; Path('tracked.txt').write_text('{tag}|{tag_prefix}')"
+    marker = repository.parent / "check-marker"
+    check = command(
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('{{tag}}|{{tag_prefix}}')"
+    )
+    policy = replace(
+        config,
+        tag_prefix="rust-v",
+        stages=(Stage(("tracked.txt",), (command(code),), (check,), "release {tag}"),),
+    )
+    run_release(repository, policy, git_environment)
+    assert (repository / "tracked.txt").read_text() == "rust-v0.1.0|rust-v"
+    assert marker.read_text() == "rust-v0.1.0|rust-v"
+    assert git(repository, git_environment, "log", "-1", "--format=%s") == "release rust-v0.1.0"
+    assert git(repository, git_environment, "cat-file", "-t", "rust-v0.1.0") == "tag"
+
+
 def test_dry_run_invokes_no_commands_or_extra_tools(
     repository: Path,
     config: ReleaseConfig,

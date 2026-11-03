@@ -40,6 +40,8 @@ Each stage requires nonempty `files` and `commands` arrays and a nonempty `messa
 | `{version}` | Selected numeric version, without tag prefix. |
 | `{revision}` | HEAD at this stage's start; later stages see earlier preparation commits. |
 | `{python}` | Curtains' own interpreter, for standard-library-only helper scripts. |
+| `{tag}` | Release tag: `tag_prefix` followed by the selected version. |
+| `{tag_prefix}` | The policy's `tag_prefix`. |
 
 Scripts needing consumer dependencies should use the repository's package runner, for example `uv run --locked python scripts/prepare_release.py {version}`.
 

@@ -44,19 +44,22 @@ def _require_allowed(paths: frozenset[str], allowed: tuple[str, ...]) -> None:
         )
 
 
-def _format(value: str, version: str, revision: str, python: str) -> str:
+type Substitutions = Mapping[str, str]
+
+
+def _format(value: str, substitutions: Substitutions) -> str:
     validate_template(value, "stage template")
-    return value.format(version=version, revision=revision, python=python)
+    return value.format_map(substitutions)
 
 
 def _stage_commands(
     root: Path,
     commands: tuple[Command, ...],
-    substitutions: tuple[str, str, str],
+    substitutions: Substitutions,
     environment: Mapping[str, str],
 ) -> None:
     for command in commands:
-        argv = tuple(_format(value, *substitutions) for value in command)
+        argv = tuple(_format(value, substitutions) for value in command)
         print(f"Running: {shlex.join(argv)}", flush=True)
         run_command(root, argv, environment, capture=False)
 
@@ -95,7 +98,13 @@ def prepare(
 ) -> None:
     for stage in config.stages:
         revision = _head(root, environment)
-        substitutions = (version, revision, python)
+        substitutions = {
+            "version": version,
+            "revision": revision,
+            "python": python,
+            "tag": config.tag_prefix + version,
+            "tag_prefix": config.tag_prefix,
+        }
         for commands in (stage.commands, stage.checks):
             for command in commands:
                 validate_paths(root, config)
@@ -110,7 +119,7 @@ def prepare(
         tree = git_command(root, ("write-tree",), environment).strip()
         git_command(
             root,
-            ("commit", "-m", _format(stage.message, *substitutions)),
+            ("commit", "-m", _format(stage.message, substitutions)),
             environment,
             capture=False,
         )

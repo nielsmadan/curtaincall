@@ -118,6 +118,12 @@ def test_rejects_nonliteral_paths(tmp_path: Path, value: str) -> None:
         "{version!r}",
         "{version:>5}",
         "{version:}",
+        "{tag!r}",
+        "{tag:>5}",
+        "{tag:}",
+        "{tag.x}",
+        "{tag_prefix[0]}",
+        "{tag_prefix:}",
         "{}",
         "{",
         "}",
@@ -143,10 +149,10 @@ def test_stage_templates_and_literal_top_level_commands(tmp_path: Path) -> None:
                         "files": ["dist"],
                         "commands": [
                             ["touch", str(marker)],
-                            ["{python}", "{version}", "{{literal}}"],
+                            ["{python}", "{version}", "{{literal}}", "{tag_prefix}"],
                         ],
-                        "checks": [["echo", "{revision}"]],
-                        "message": "chore: {version}",
+                        "checks": [["echo", "{revision}", "{tag}", "{tag_prefix}"]],
+                        "message": "chore: {tag_prefix}{version} {tag}",
                     }
                 ],
             }
@@ -154,7 +160,9 @@ def test_stage_templates_and_literal_top_level_commands(tmp_path: Path) -> None:
     )
     config = load_config(path)
     assert config.checks == (("{literal}", ""),)
-    assert config.stages[0].checks == (("echo", "{revision}"),)
+    assert config.stages[0].checks == (("echo", "{revision}", "{tag}", "{tag_prefix}"),)
+    assert config.stages[0].commands[1] == ("{python}", "{version}", "{{literal}}", "{tag_prefix}")
+    assert config.stages[0].message == "chore: {tag_prefix}{version} {tag}"
     assert list(tmp_path.iterdir()) == [path]
 
 

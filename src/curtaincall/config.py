@@ -72,20 +72,25 @@ def _paths(value: object, context: str) -> tuple[str, ...]:
     return tuple(_path(item, f"{context}[{i}]") for i, item in enumerate(_strings(value, context)))
 
 
+TEMPLATE_FIELDS = frozenset({"version", "revision", "python", "tag", "tag_prefix"})
+
+
 def validate_template(value: str, context: str) -> None:
     try:
         fields = tuple(Formatter().parse(value))
     except ValueError as error:
         raise ReleaseError(f"{context}: malformed template: {error}") from error
     for _, field, spec, conversion in fields:
-        if field is not None and (
-            field not in {"version", "revision", "python"} or spec or conversion
-        ):
+        if field is not None and (field not in TEMPLATE_FIELDS or spec or conversion):
             raise ReleaseError(
-                f"{context}: only plain version, revision and python fields are allowed"
+                f"{context}: only plain version, revision, python, tag and tag_prefix "
+                "fields are allowed"
             )
     # Formatter discards an empty format spec, so reject that syntax before formatting.
-    if re.search(r"\{(?:version|revision|python):", value.replace("{{", "").replace("}}", "")):
+    if re.search(
+        r"\{(?:" + "|".join(sorted(TEMPLATE_FIELDS)) + r"):",
+        value.replace("{{", "").replace("}}", ""),
+    ):
         raise ReleaseError(f"{context}: format specs are not allowed")
 
 
