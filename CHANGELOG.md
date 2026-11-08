@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.0
+
+### Features
+
+- Add release confirmation summary
+
+
+### Maintenance
+
+- Auto-merge dependabot patch and minor updates
+
 ## v1.1.0
 
 ### Features
