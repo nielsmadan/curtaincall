@@ -16,6 +16,8 @@ Two uncommon inspection limitations remain: a relevant commit range containing o
 
 Bare invocation previews a proposal, runs checks, then asks for confirmation. Enter or `n` cancels; entering a version previews it again before confirmation. Non-terminal use requires `--yes`. If no automatic bump exists, `--yes` returns without releasing; provide an override. `--help` and `--version` work outside Git repositories.
 
+The summary shows the previous and proposed release tags, the number of commits since the previous release (or repository start), change counts, and lists of feature and breaking-change commit subjects. It repeats after checks so it sits directly above confirmation. Commit counts and lists respect configured `paths`; the ahead-of-origin count covers the whole branch. Breaking changes use the same conventional-commit rules as version selection: a `!` header or a `BREAKING CHANGE:` / `BREAKING-CHANGE:` line in a conventional commit. A breaking feature appears in both lists.
+
 Dry-run uses read-only inspection and contacts origin. It skips tool requirements and every configured command, including preflight checks, preparation and custom suggestions. A skipped custom suggestion produces a labelled built-in estimate; it is not the custom tool's result.
 
 Checks run before confirmation and are trusted commands: they may leave artifacts even if you cancel afterward. A cancellation, EOF or interruption before the push returns 0; failures return 1; argument usage errors return 2. An interruption during the push is a push failure with uncertain outcome.

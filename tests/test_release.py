@@ -165,9 +165,17 @@ def test_interactive_override_is_previewed_again(
 ) -> None:
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     answers = iter(("v2.0.0", "y"))
-    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    previews = iter(("first release -> v0.1.0", "first release -> v2.0.0"))
+
+    def answer(_: str) -> str:
+        output = capsys.readouterr().out
+        assert next(previews) in output
+        assert "Commits since repository start: 1" in output
+        assert "Features:\n  - feat: initial\nBreaking changes: none\n" in output
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", answer)
     run_release(repository, config, git_environment, yes=False)
-    assert "-> v2.0.0" in capsys.readouterr().out
     assert git(repository, git_environment, "tag", "--list") == "v2.0.0"
 
 
@@ -176,18 +184,76 @@ def test_checks_run_before_confirmation(
     config: ReleaseConfig,
     git_environment: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
+    released(repository, git_environment)
+    for message in (
+        "feat(cli): add preview",
+        "feat!: replace format",
+        "chore: update API\n\nBREAKING CHANGE: old API removed",
+        "fix: change defaults\n\nBREAKING-CHANGE: defaults changed",
+        "",
+    ):
+        git(
+            repository,
+            git_environment,
+            "commit",
+            "--allow-empty",
+            "--allow-empty-message",
+            "-m",
+            message,
+        )
     marker = repository.parent / "checked"
-    check = command(f"from pathlib import Path; Path({str(marker)!r}).write_text('passed')")
+    check = command(
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('passed'); print('CHECKS FINISHED')"
+    )
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
     def answer(_: str) -> str:
         assert marker.read_text() == "passed"
+        output = capfd.readouterr().out
+        assert output.split("CHECKS FINISHED\n")[-1].splitlines() == [
+            "",
+            "Example: v0.1.0 -> v0.2.0",
+            "Commits since previous release: 6",
+            "Branch: main; 6 commit(s) ahead of origin",
+            "Changes: 2 feature(s), 2 fix(es), 3 breaking change(s)",
+            "Features:",
+            "  - feat!: replace format",
+            "  - feat(cli): add preview",
+            "Breaking changes:",
+            "  - fix: change defaults",
+            "  - chore: update API",
+            "  - feat!: replace format",
+        ]
         return ""
 
     monkeypatch.setattr("builtins.input", answer)
     run_release(repository, replace(config, checks=(check,)), git_environment, yes=False)
-    assert git(repository, git_environment, "tag", "--list") == ""
+    assert git(repository, git_environment, "tag", "--list") == "v0.1.0"
+
+
+def test_summary_respects_configured_paths(
+    repository: Path,
+    config: ReleaseConfig,
+    git_environment: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    released(repository, git_environment)
+    (repository / "other.txt").write_text("outside scope")
+    git(repository, git_environment, "add", "other.txt")
+    git(repository, git_environment, "commit", "-m", "feat!: unrelated feature")
+    run_release(repository, replace(config, paths=("tracked.txt",)), git_environment, dry_run=True)
+    assert capsys.readouterr().out.splitlines() == [
+        "",
+        "Example: v0.1.0 -> v0.1.1",
+        "Commits since previous release (configured paths): 1",
+        "Branch: main; 2 commit(s) ahead of origin",
+        "Changes: 0 feature(s), 1 fix(es), 0 breaking change(s)",
+        "Features: none",
+        "Breaking changes: none",
+        "Dry run: checks, preparation, tagging and publication skipped.",
+    ]
 
 
 @pytest.mark.parametrize("during_prompt", [False, True])

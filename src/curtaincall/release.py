@@ -17,7 +17,7 @@ from curtaincall.models import (
     ReleaseRequest,
     ReleaseState,
 )
-from curtaincall.versions import make_proposal, select_version
+from curtaincall.versions import count_changes, make_proposal, select_version
 
 
 def _head(root: Path, environment: Mapping[str, str]) -> str:
@@ -162,7 +162,12 @@ def _preview(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> 
         if proposal.version is not None
         else "no automatic bump"
     )
-    print(f"{config.name}: {state.latest or 'first release'} -> {version}")
+    previous = config.tag_prefix + state.latest if state.latest is not None else "first release"
+    print(f"\n{config.name}: {previous} -> {version}")
+    scope = " (configured paths)" if config.paths else ""
+    print(
+        f"Commits since {'previous release' if state.latest else 'repository start'}{scope}: {len(state.messages)}"
+    )
     print(f"Branch: {state.branch}; {state.ahead} commit(s) ahead of origin")
     print(
         f"Changes: {proposal.counts.features} feature(s), {proposal.counts.fixes} fix(es), "
@@ -170,6 +175,16 @@ def _preview(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> 
     )
     if proposal.suggestion_skipped and config.suggest is not None:
         print(f"Built-in estimate only; dry-run skipped suggestion: {shlex.join(config.suggest)}")
+    changes = [
+        (message.partition("\n")[0], count_changes((message,))) for message in state.messages
+    ]
+    for label, subjects in (
+        ("Features", [subject for subject, counts in changes if counts.features]),
+        ("Breaking changes", [subject for subject, counts in changes if counts.breaking]),
+    ):
+        print(f"{label}:" if subjects else f"{label}: none")
+        for subject in subjects:
+            print(f"  - {subject}")
 
 
 def _confirm(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> str | None:
@@ -282,6 +297,8 @@ def release(
     for command in config.checks:
         print(f"Checking: {shlex.join(command)}", flush=True)
         run_command(root, command, environment, capture=False)
+    if config.checks:
+        _preview(config, reviewed, proposal)
     version = proposal.version if request.yes else _confirm(config, reviewed, proposal)
     if version is None:
         return
