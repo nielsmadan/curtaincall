@@ -55,3 +55,48 @@ def test_formula_cli_pins_tag_archive_and_digest(tmp_path: Path) -> None:
 def test_formula_rejects_invalid_tag() -> None:
     with pytest.raises(workflow.WorkflowError, match="Invalid release tag"):
         workflow.render_formula("@VERSION@", "v1.2", "0" * 64)
+
+
+def formula_for(tag: str) -> str:
+    template = workflow.FORMULA_TEMPLATE.read_text(encoding="utf-8")
+    return workflow.render_formula(template, tag, "0" * 64)
+
+
+@pytest.mark.parametrize(
+    "existing, expected_output, expected_tag",
+    [
+        (None, "updated", "v1.2.3"),
+        ("v1.2.2", "updated", "v1.2.3"),
+        ("v1.2.3", "updated", "v1.2.3"),
+        ("v1.10.0", "skipped-newer", "v1.10.0"),
+    ],
+)
+def test_publish_formula_never_downgrades_the_tap(
+    tmp_path: Path, existing: str | None, expected_output: str, expected_tag: str
+) -> None:
+    formula = tmp_path / "curtaincall.rb"
+    formula.write_text(formula_for(TAG))
+    tap_formula = tmp_path / "tap/Formula/curtaincall.rb"
+    if existing is not None:
+        tap_formula.parent.mkdir(parents=True)
+        tap_formula.write_text(formula_for(existing))
+    result = subprocess.run(
+        (sys.executable, str(SCRIPT), "publish-formula", str(formula), str(tap_formula)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{expected_output}\n"
+    assert tap_formula.read_text() == formula_for(expected_tag)
+
+
+def test_publish_formula_rejects_an_unrecognised_tap_formula(tmp_path: Path) -> None:
+    formula = tmp_path / "curtaincall.rb"
+    formula.write_text(formula_for(TAG))
+    tap_formula = tmp_path / "tap.rb"
+    unrecognised = 'class Curtaincall < Formula\n  url "https://example.com/x.tar.gz"\nend\n'
+    tap_formula.write_text(unrecognised)
+    with pytest.raises(workflow.WorkflowError, match="no unique curtaincall release version"):
+        workflow.publish_formula(formula, tap_formula)
+    assert tap_formula.read_text() == unrecognised

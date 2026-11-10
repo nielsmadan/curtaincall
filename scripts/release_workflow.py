@@ -7,6 +7,10 @@ from pathlib import Path
 
 SEMVER_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 FORMULA_TEMPLATE = Path(__file__).with_name("curtaincall.rb.in")
+FORMULA_URL = re.compile(
+    r'^  url "https://github\.com/nielsmadan/curtaincall/archive/refs/tags/(v[^"/]+)\.tar\.gz"$',
+    re.MULTILINE,
+)
 
 
 class WorkflowError(Exception):
@@ -46,6 +50,24 @@ def render_formula(template: str, tag: str, sha256: str) -> str:
     return template.replace("@VERSION@", tag.removeprefix("v")).replace("@SHA256@", sha256)
 
 
+def formula_version(content: str) -> tuple[int, int, int]:
+    tags = FORMULA_URL.findall(content)
+    parsed = version(tags[0]) if len(tags) == 1 else None
+    if parsed is None:
+        raise WorkflowError("Formula has no unique curtaincall release version.")
+    return parsed
+
+
+def publish_formula(formula: Path, tap_formula: Path) -> bool:
+    content = formula.read_text(encoding="utf-8")
+    release = formula_version(content)
+    if tap_formula.exists() and formula_version(tap_formula.read_text(encoding="utf-8")) > release:
+        return False
+    tap_formula.parent.mkdir(parents=True, exist_ok=True)
+    tap_formula.write_text(content, encoding="utf-8")
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="operation", required=True)
@@ -56,6 +78,9 @@ def main() -> None:
     formula.add_argument("tag")
     formula.add_argument("archive", type=Path)
     formula.add_argument("output", type=Path)
+    publish = subparsers.add_parser("publish-formula")
+    publish.add_argument("formula", type=Path)
+    publish.add_argument("tap_formula", type=Path)
     args = parser.parse_args()
     if args.operation == "project-metadata":
         print(f"version={project_metadata(args.tag, args.project)}")
@@ -64,6 +89,9 @@ def main() -> None:
         template = FORMULA_TEMPLATE.read_text(encoding="utf-8")
         content = render_formula(template, args.tag, _sha256(args.archive))
         args.output.write_text(content, encoding="utf-8")
+        return
+    if args.operation == "publish-formula":
+        print("updated" if publish_formula(args.formula, args.tap_formula) else "skipped-newer")
 
 
 if __name__ == "__main__":
