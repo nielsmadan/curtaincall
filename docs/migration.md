@@ -35,7 +35,7 @@ A consumer's tag-triggered workflow often carries a helper script that validates
 
 Pass tag names and other workflow values to `run:` through `env:`, never as `${{ }}` expressions inside the script, which Actions substitutes into the shell text before it runs.
 
-Pin the full commit SHA of a release tag with the version in a trailing comment, so Dependabot can bump it. The pin is the `curtains` version: the action installs `curtains` from its own checkout and has no version input. It has no outputs either; it puts `curtains` on `PATH` for later steps and leaves the job's `python3` unchanged. The action brings its own Python, so the job needs no `setup-python` for it. The policy must set `repository` for `publish` and for the origin check.
+Pin the full commit SHA of a release tag with the version in a trailing comment, or the exact release tag when a workflow lockfile from `gh actions-lock` locks it; Dependabot bumps either. The pin is the `curtains` version: the action installs `curtains` from its own checkout and has no version input. It has no outputs either; it puts `curtains` on `PATH` for later steps and leaves the job's `python3` unchanged. The action brings its own Python, so the job needs no `setup-python` for it. The policy must set `repository` for `publish` and for the origin check.
 
 | Fork command | `curtains ci` |
 | --- | --- |
