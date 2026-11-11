@@ -90,7 +90,7 @@ jobs:
       - name: Record python3
         id: before
         run: echo "python3=$(command -v python3)" >> "$GITHUB_OUTPUT"
-      - uses: ./
+      - uses: $/
       - name: Verify installed command
         env:
           PYTHON3_BEFORE: ${{ steps.before.outputs.python3 }}

@@ -36,7 +36,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.sha }}
-      - uses: ./
+      - uses: $/
       - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.13"
@@ -173,7 +173,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.sha }}
-      - uses: ./
+      - uses: $/
       - name: Revalidate release commit
         env:
           RELEASE_COMMIT: ${{ needs.verify.outputs.release-commit }}
