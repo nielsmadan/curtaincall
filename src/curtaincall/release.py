@@ -119,7 +119,12 @@ def prepare(
         tree = git_command(root, ("write-tree",), environment).strip()
         git_command(
             root,
-            ("commit", "-m", _format(stage.message, substitutions)),
+            (
+                "commit",
+                *(("--gpg-sign",) if config.sign else ()),
+                "-m",
+                _format(stage.message, substitutions),
+            ),
             environment,
             capture=False,
         )
@@ -156,6 +161,15 @@ def _tools(root: Path, config: ReleaseConfig, environment: Mapping[str, str]) ->
             raise ReleaseError(f"Required release tool is unavailable: {tool}")
 
 
+def _require_signing(root: Path, environment: Mapping[str, str]) -> None:
+    try:
+        git_command(
+            root, ("commit-tree", "--gpg-sign", "-m", "Signing check", "HEAD^{tree}"), environment
+        )
+    except ReleaseError as error:
+        raise ReleaseError(f"config.sign requires signing, but Git cannot sign: {error}") from error
+
+
 def _preview(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> None:
     version = (
         config.tag_prefix + proposal.version
@@ -169,6 +183,8 @@ def _preview(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> 
         f"Commits since {'previous release' if state.latest else 'repository start'}{scope}: {len(state.messages)}"
     )
     print(f"Branch: {state.branch}; {state.ahead} commit(s) ahead of origin")
+    if config.sign:
+        print("Signing: required for preparation commits and the release tag")
     print(
         f"Changes: {proposal.counts.features} feature(s), {proposal.counts.fixes} fix(es), "
         f"{proposal.counts.breaking} breaking change(s)"
@@ -217,7 +233,15 @@ def _publish(
     tag = config.tag_prefix + version
     git_command(
         root,
-        ("tag", "--annotate", "--no-sign", "-m", f"Release {tag}", "--", tag, head),
+        (
+            "tag",
+            "--sign" if config.sign else "--annotate",
+            "-m",
+            f"Release {tag}",
+            "--",
+            tag,
+            head,
+        ),
         environment,
     )
     tag_object = git_command(
@@ -282,6 +306,8 @@ def release(
     )
     if not request.dry_run:
         _tools(root, config, environment)
+        if config.sign:
+            _require_signing(root, environment)
         if use_suggestion and config.suggest is not None:
             suggested = run_command(root, config.suggest, environment).strip()
     proposal = make_proposal(

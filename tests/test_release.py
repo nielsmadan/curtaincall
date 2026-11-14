@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -798,6 +799,71 @@ def test_unsupported_atomic_push_preserves_artifacts(
     assert remote_refs(repository, git_environment) == before
     assert git(repository, git_environment, "tag", "--list") == "v0.1.0"
     assert git(repository, git_environment, "show", "HEAD:tracked.txt") == "0.1.0"
+
+
+def signing_key(root: Path, environment: dict[str, str]) -> None:
+    key = root.parent / "signing-key"
+    subprocess.run(
+        ("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)),
+        env=environment,
+        check=True,
+        capture_output=True,
+    )
+    signers = root.parent / "allowed-signers"
+    signers.write_text(f"release@example.invalid {key.with_suffix('.pub').read_text()}")
+    for setting, value in (
+        ("gpg.format", "ssh"),
+        ("user.signingkey", str(key)),
+        ("gpg.ssh.allowedSignersFile", str(signers)),
+    ):
+        git(root, environment, "config", setting, value)
+
+
+def test_sign_requires_signed_commits_and_tag(
+    repository: Path,
+    config: ReleaseConfig,
+    git_environment: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    signing_key(repository, git_environment)
+    run_release(repository, replace(config, stages=(stage(),), sign=True), git_environment)
+    assert "Signing: required for preparation commits and the release tag" in (
+        capsys.readouterr().out.splitlines()
+    )
+    git(repository, git_environment, "verify-commit", "HEAD")
+    git(repository, git_environment, "verify-tag", "v0.1.0")
+    assert "refs/tags/v0.1.0" in remote_refs(repository, git_environment)
+
+
+def test_unset_sign_follows_git_tag_config(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    signing_key(repository, git_environment)
+    git(repository, git_environment, "config", "tag.gpgsign", "true")
+    run_release(repository, config, git_environment)
+    git(repository, git_environment, "verify-tag", "v0.1.0")
+
+
+def test_sign_without_key_fails_before_commands(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    git(repository, git_environment, "config", "gpg.format", "ssh")
+    head = git(repository, git_environment, "rev-parse", "HEAD")
+    before = remote_refs(repository, git_environment)
+    marker = repository.parent / "checked"
+    policy = replace(
+        config,
+        checks=(command(f"from pathlib import Path; Path({str(marker)!r}).touch()"),),
+        stages=(stage(),),
+        sign=True,
+    )
+    with pytest.raises(ReleaseError, match=r"(?s)Git cannot sign: .*user\.signingkey"):
+        run_release(repository, policy, git_environment)
+    assert not marker.exists()
+    assert git(repository, git_environment, "rev-parse", "HEAD") == head
+    assert git(repository, git_environment, "status", "--porcelain") == ""
+    assert remote_refs(repository, git_environment) == before
+    assert git(repository, git_environment, "tag", "--list") == ""
 
 
 def test_override_requires_relevant_history(

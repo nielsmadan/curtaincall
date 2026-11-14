@@ -28,6 +28,7 @@ Required-tool lookup uses the same root as command execution: relative `PATH` en
 | `repository` | Optional GitHub `owner/name`; requires origin identity to match exactly. |
 | `workflow` | Optional `.yml`/`.yaml` filename; requires `repository`. Prints an asynchronous workflow link. |
 | `draft` | Boolean; `false`. `true` requires `workflow`; prints a draft review link. |
+| `sign` | Boolean; `false`. `true` signs preparation commits (`git commit --gpg-sign`) and the release tag (`git tag --sign`) with the configured Git signing key. A real run first signs a throwaway commit object, before preflight checks and stages run, so a missing or unusable key fails early; any later signing failure still stops the release before the push. `false` leaves signing to Git's `commit.gpgSign` and `tag.gpgSign`. |
 
 Every command is a nonempty array of strings. The executable must be nonempty; later arguments may be empty. NUL is rejected. There are no shell command strings. `checks` and `suggest` arguments are literal, with no interpolation.
 

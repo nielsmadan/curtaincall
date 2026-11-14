@@ -30,10 +30,11 @@ def test_defaults_are_immutable(config: ReleaseConfig) -> None:
     assert config.tools == ()
     assert config.checks == ()
     assert config.publication == "Version tag pushed."
-    assert (config.repository, config.workflow, config.suggest, config.draft) == (
+    assert (config.repository, config.workflow, config.suggest, config.draft, config.sign) == (
         None,
         None,
         None,
+        False,
         False,
     )
     with pytest.raises(FrozenInstanceError):
@@ -71,6 +72,8 @@ def test_defaults_are_immutable(config: ReleaseConfig) -> None:
         ({"repository": "org/repo", "workflow": "../release.yml"}, "workflow"),
         ({"draft": 1}, "draft"),
         ({"draft": True}, "draft"),
+        ({"sign": 1}, "sign"),
+        ({"sign": "true"}, "sign"),
         ({"suggest": []}, "suggest"),
         ({"suggest": None}, "suggest"),
         ({"stages": [{}]}, "stages"),

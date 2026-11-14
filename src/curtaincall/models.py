@@ -31,6 +31,7 @@ class ReleaseConfig:
     workflow: str | None
     suggest: Command | None
     draft: bool
+    sign: bool
 
 
 @dataclass(frozen=True, slots=True)

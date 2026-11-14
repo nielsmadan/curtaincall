@@ -182,6 +182,7 @@ def load_config(path: Path) -> ReleaseConfig:
             "workflow",
             "suggest",
             "draft",
+            "sign",
         },
     )
     components = obj.get("components", 3)
@@ -198,6 +199,9 @@ def load_config(path: Path) -> ReleaseConfig:
     validate_ref(branch, "config.branch", branch=True)
     validate_ref(prefix + initial, "config.tag_prefix")
     repository, workflow, draft = _publication(obj)
+    sign = obj.get("sign", False)
+    if not isinstance(sign, bool):
+        raise ReleaseError("config.sign: expected a boolean")
     return ReleaseConfig(
         name=_string(obj.get("name"), "config.name"),
         branch=branch,
@@ -216,6 +220,7 @@ def load_config(path: Path) -> ReleaseConfig:
         workflow=workflow,
         suggest=None if "suggest" not in obj else _command(obj["suggest"], "config.suggest"),
         draft=draft,
+        sign=sign,
     )
 
 
