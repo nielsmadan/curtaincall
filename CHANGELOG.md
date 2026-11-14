@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3.0
+
+### Features
+
+- Add sign policy option for signed release commits and tags
+
+
+### Fixes
+
+- Lock the repository's own action in workflows
+
+
+### Maintenance
+
+- Bump ruff (#6)
+
+- Keep release retries from downgrading the tap
+
+- Lock workflow actions by tag
+
 ## v1.2.0
 
 ### Features
