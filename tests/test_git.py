@@ -282,7 +282,7 @@ def test_remote_branch_object_missing(
         git(other, git_environment, "config", key, value)
     commit(other, git_environment)
     git(other, git_environment, "push", "origin", "HEAD:refs/heads/main")
-    with pytest.raises(ReleaseError, match="cat-file"):
+    with pytest.raises(ReleaseError, match=r"Origin's main is at \w{12}, which is not in this"):
         inspect_repository(repository, config, git_environment)
     assert not (repository / ".git/FETCH_HEAD").exists()
 
@@ -295,7 +295,7 @@ def test_remote_branch_not_ancestor(
     git(repository, git_environment, "push", "origin", "HEAD:refs/heads/main")
     git(repository, git_environment, "reset", "--hard", start)
     commit(repository, git_environment, "fix: local")
-    with pytest.raises(ReleaseError, match="merge-base"):
+    with pytest.raises(ReleaseError, match=r"HEAD does not contain origin's main \(\w{12}\)"):
         inspect_repository(repository, config, git_environment)
 
 
@@ -323,7 +323,7 @@ def test_partial_clone_inspection_does_not_fetch_missing_remote_objects(
         if path.is_file()
     }
     before_refs = git(partial, git_environment, "show-ref")
-    with pytest.raises(ReleaseError, match="cat-file"):
+    with pytest.raises(ReleaseError, match=r"Origin's main is at \w{12}, which is not in this"):
         inspect_repository(partial, config, git_environment)
     assert {
         path.relative_to(objects): path.read_bytes()
@@ -372,7 +372,7 @@ def test_latest_tag_must_be_ancestor(
     commit(repository, git_environment)
     tag(repository, git_environment)
     git(repository, git_environment, "checkout", "main")
-    with pytest.raises(ReleaseError, match="merge-base"):
+    with pytest.raises(ReleaseError, match=r"latest release tag v0\.1\.0 \(\w{12}\)"):
         inspect_repository(repository, config, git_environment)
 
 
@@ -641,7 +641,7 @@ def test_replacement_cannot_fake_ancestry(
     )
     git(repository, git_environment, "replace", head, replacement)
     git(repository, git_environment, "merge-base", "--is-ancestor", remote_head, head)
-    with pytest.raises(ReleaseError, match="merge-base"):
+    with pytest.raises(ReleaseError, match="HEAD does not contain origin's main"):
         inspect_repository(repository, config, git_environment)
 
 

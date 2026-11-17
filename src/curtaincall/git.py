@@ -308,8 +308,16 @@ def _validate_history(
     branch = remote.get(f"refs/heads/{config.branch}")
     if branch is None:
         raise ReleaseError(f"Origin has no {config.branch} branch.")
-    git_command(root, ("cat-file", "-e", f"{branch}^{{commit}}"), environment)
-    git_command(root, ("merge-base", "--is-ancestor", branch, "HEAD"), environment)
+    if git_process(root, ("cat-file", "-e", f"{branch}^{{commit}}"), environment).code:
+        raise ReleaseError(
+            f"Origin's {config.branch} is at {branch[:12]}, which is not in this repository; "
+            f"fetch origin and integrate origin/{config.branch} before releasing."
+        )
+    if not is_ancestor(root, branch, "HEAD", environment):
+        raise ReleaseError(
+            f"HEAD does not contain origin's {config.branch} ({branch[:12]}); "
+            f"integrate origin/{config.branch} before releasing."
+        )
     remote_tags = {
         ref.removeprefix("refs/tags/")
         for ref in remote
@@ -359,7 +367,11 @@ def inspect_repository(
     latest = None if latest_tag is None else version_text(config, latest_tag.name)
     revision_range = "HEAD"
     if latest_tag is not None:
-        git_command(root, ("merge-base", "--is-ancestor", latest_tag.commit_id, head), environment)
+        if not is_ancestor(root, latest_tag.commit_id, head, environment):
+            raise ReleaseError(
+                f"HEAD does not contain the latest release tag {latest_tag.name} "
+                f"({latest_tag.commit_id[:12]}); release from a commit that includes it."
+            )
         revision_range = f"{latest_tag.commit_id}..{head}"
     output = git_command(
         root,
