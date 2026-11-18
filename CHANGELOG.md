@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.1
+
+### Fixes
+
+- Explain release history check failures
+
 ## v1.3.0
 
 ### Features
