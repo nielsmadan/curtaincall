@@ -6,7 +6,7 @@ from importlib.metadata import version
 
 from curtaincall import ci
 from curtaincall.config import load_config
-from curtaincall.errors import ReleaseError
+from curtaincall.errors import ReleaseCancelled, ReleaseError
 from curtaincall.git import command_environment, resolve_location
 from curtaincall.models import ReleaseRequest
 from curtaincall.release import release
@@ -34,6 +34,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         location = resolve_location(args.directory, args.config, environment)
         config = load_config(location.config_path)
         release(location, config, ReleaseRequest(args.version, args.dry_run, args.yes), environment)
+    except ReleaseCancelled as cancelled:
+        print(f"\n{cancelled}", file=sys.stderr)
+        return 130 if cancelled.left_changes else 0
     except (EOFError, KeyboardInterrupt):
         print("\nRelease cancelled.", file=sys.stderr)
         return 0

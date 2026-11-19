@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Final
 
 from curtaincall.config import validate_paths, validate_ref
-from curtaincall.errors import ReleaseError
+from curtaincall.errors import ReleaseError, name_list, short_id
 from curtaincall.models import Command, Location, RefSnapshot, ReleaseConfig, ReleaseState, TagState
 from curtaincall.versions import tag_version, version_text
 
@@ -58,6 +58,12 @@ GIT_PREFIX: Final[Command] = (
 )
 
 
+def _display_command(argv: Command) -> str:
+    if argv[: len(GIT_PREFIX)] == GIT_PREFIX:
+        return shlex.join(("git", *argv[len(GIT_PREFIX) :]))
+    return shlex.join(argv)
+
+
 def _spawn(
     root: Path,
     argv: Command,
@@ -71,7 +77,7 @@ def _spawn(
             argv, cwd=root, env=environment, capture_output=capture, check=False, input=input_data
         )
     except (OSError, ValueError) as error:
-        raise ReleaseError(_redact_urls(f"Cannot run {shlex.join(argv)}: {error}")) from error
+        raise ReleaseError(_redact_urls(f"Cannot run {_display_command(argv)}: {error}")) from error
     return ProcessResult(
         result.returncode, os.fsdecode(result.stdout or b""), os.fsdecode(result.stderr or b"")
     )
@@ -96,7 +102,7 @@ def run_command(
         detail = (result.stderr or result.stdout).strip()
         raise ReleaseError(
             _redact_urls(
-                f"Command failed ({result.code}): {shlex.join(argv)}"
+                f"Command failed ({result.code}): {_display_command(argv)}"
                 + (f"\n{detail}" if detail else "")
             )
         )
@@ -138,6 +144,15 @@ def resolve_revision(root: Path, revision: str, environment: Mapping[str, str]) 
 
 def object_type(root: Path, revision: str, environment: Mapping[str, str]) -> str:
     return git_command(root, ("cat-file", "-t", revision), environment).strip()
+
+
+def head_ref(root: Path, environment: Mapping[str, str]) -> str | None:
+    result = git_process(root, ("symbolic-ref", "--quiet", "HEAD"), environment)
+    if result.code == 1:
+        return None
+    if result.code:
+        raise ReleaseError(process_failure("git symbolic-ref HEAD", result))
+    return result.stdout.strip()
 
 
 def is_ancestor(root: Path, ancestor: str, descendant: str, environment: Mapping[str, str]) -> bool:
@@ -297,6 +312,10 @@ def _remote_refs(
     return tuple(sorted(refs))
 
 
+def _tag_list(names: set[str], config: ReleaseConfig) -> str:
+    return name_list(sorted(names, key=lambda name: tag_version(name, config) or ()))
+
+
 def _validate_history(
     root: Path,
     config: ReleaseConfig,
@@ -310,12 +329,12 @@ def _validate_history(
         raise ReleaseError(f"Origin has no {config.branch} branch.")
     if git_process(root, ("cat-file", "-e", f"{branch}^{{commit}}"), environment).code:
         raise ReleaseError(
-            f"Origin's {config.branch} is at {branch[:12]}, which is not in this repository; "
+            f"Origin's {config.branch} is at {short_id(branch)}, which is not in this repository; "
             f"fetch origin and integrate origin/{config.branch} before releasing."
         )
     if not is_ancestor(root, branch, "HEAD", environment):
         raise ReleaseError(
-            f"HEAD does not contain origin's {config.branch} ({branch[:12]}); "
+            f"HEAD does not contain origin's {config.branch} ({short_id(branch)}); "
             f"integrate origin/{config.branch} before releasing."
         )
     remote_tags = {
@@ -323,9 +342,13 @@ def _validate_history(
         for ref in remote
         if ref.startswith("refs/tags/") and not ref.endswith("^{}")
     }
-    if remote_tags != {tag.name for tag in tags}:
+    local_tags = {tag.name for tag in tags}
+    if remote_tags != local_tags:
         raise ReleaseError(
-            "Local and origin release tag sets differ; inspect and synchronize tags."
+            "Local and origin release tags differ "
+            f"(only on origin: {_tag_list(remote_tags - local_tags, config)}; "
+            f"only local: {_tag_list(local_tags - remote_tags, config)}); "
+            "inspect and synchronize tags."
         )
     for tag in tags:
         ref = f"refs/tags/{tag.name}"
@@ -341,14 +364,15 @@ def inspect_repository(
     validate_ref(config.branch, "config.branch", branch=True)
     validate_ref(config.tag_prefix + config.initial_version, "config.tag_prefix")
     validate_paths(root, config)
-    head = git_command(root, ("rev-parse", "--verify", "HEAD^{commit}"), environment).strip()
-    branch = (
-        git_command(root, ("symbolic-ref", "--quiet", "HEAD"), environment)
-        .strip()
-        .removeprefix("refs/heads/")
-    )
+    ref = head_ref(root, environment)
+    if ref is None:
+        raise ReleaseError(f"Release requires branch {config.branch}; HEAD is detached.")
+    branch = ref.removeprefix("refs/heads/")
     if branch != config.branch:
         raise ReleaseError(f"Release requires branch {config.branch}; current branch is {branch}.")
+    head = resolve_revision(root, "HEAD^{commit}", environment)
+    if head is None:
+        raise ReleaseError(f"Release requires a commit on {config.branch}; the branch has none.")
     if is_shallow(root, environment):
         raise ReleaseError("Release requires a complete, non-shallow repository.")
     if git_command(
@@ -370,7 +394,7 @@ def inspect_repository(
         if not is_ancestor(root, latest_tag.commit_id, head, environment):
             raise ReleaseError(
                 f"HEAD does not contain the latest release tag {latest_tag.name} "
-                f"({latest_tag.commit_id[:12]}); release from a commit that includes it."
+                f"({short_id(latest_tag.commit_id)}); release from a commit that includes it."
             )
         revision_range = f"{latest_tag.commit_id}..{head}"
     output = git_command(

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from curtaincall.cli import main
+from curtaincall.errors import ReleaseCancelled
 from curtaincall.git import git_command, run_command
 from curtaincall.models import Command
 
@@ -291,6 +292,27 @@ def test_interruption_has_no_traceback(
     monkeypatch.setattr(os, "environ", git_environment)
     assert main(("--directory", str(repository))) == 0
     assert capsys.readouterr().err == "\nRelease cancelled.\n"
+
+
+@pytest.mark.parametrize("left_changes, status", [(False, 0), (True, 130)])
+def test_cancellation_exit_status_reflects_leftovers(
+    repository: Path,
+    git_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    left_changes: bool,
+    status: int,
+) -> None:
+    configure(repository, git_environment)
+    message = "Release cancelled before the push. Branch main is unchanged; the worktree is clean."
+
+    def cancelled(*_: object) -> None:
+        raise ReleaseCancelled(message, left_changes=left_changes)
+
+    monkeypatch.setattr("curtaincall.cli.release", cancelled)
+    monkeypatch.setattr(os, "environ", git_environment)
+    assert main(("--directory", str(repository))) == status
+    assert capsys.readouterr().err == f"\n{message}\n"
 
 
 def test_cli_success_preparation_and_override(

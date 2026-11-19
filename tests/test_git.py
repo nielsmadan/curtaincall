@@ -144,9 +144,20 @@ def test_dirty_tree_rejected(
         inspect_repository(repository, config, git_environment)
 
 
-@pytest.mark.parametrize("mode", ["unborn", "detached", "wrong"])
+@pytest.mark.parametrize(
+    "mode, message",
+    [
+        ("unborn", r"^Release requires branch main; current branch is new\.$"),
+        ("detached", r"^Release requires branch main; HEAD is detached\.$"),
+        ("wrong", r"^Release requires branch main; current branch is other\.$"),
+    ],
+)
 def test_invalid_branch_rejected(
-    repository: Path, git_environment: dict[str, str], config: ReleaseConfig, mode: str
+    repository: Path,
+    git_environment: dict[str, str],
+    config: ReleaseConfig,
+    mode: str,
+    message: str,
 ) -> None:
     if mode == "unborn":
         git(repository, git_environment, "checkout", "--orphan", "new")
@@ -154,7 +165,7 @@ def test_invalid_branch_rejected(
         git(repository, git_environment, "checkout", "--detach")
     else:
         git(repository, git_environment, "checkout", "-b", "other")
-    with pytest.raises(ReleaseError):
+    with pytest.raises(ReleaseError, match=message):
         inspect_repository(repository, config, git_environment)
 
 
@@ -349,8 +360,32 @@ def test_complete_historic_tag_sets_required(
     commit(repository, git_environment)
     destination = repository if missing == "local" else repository.parent / "remote.git"
     git(destination, git_environment, "update-ref", "-d", "refs/tags/v0.1.0")
-    with pytest.raises(ReleaseError, match="tag sets differ"):
+    expected = (
+        "only on origin: v0.1.0; only local: none"
+        if missing == "local"
+        else "only on origin: none; only local: v0.1.0"
+    )
+    with pytest.raises(ReleaseError, match=rf"release tags differ \({expected}\)"):
         inspect_repository(repository, config, git_environment)
+
+
+def test_tag_differences_listed_in_version_order(
+    repository: Path, git_environment: dict[str, str], config: ReleaseConfig
+) -> None:
+    for name in ("v0.10.0", "v0.9.0"):
+        tag(repository, git_environment, name)
+        git(repository, git_environment, "tag", "-d", name)
+    with pytest.raises(ReleaseError, match=r"only on origin: v0\.9\.0, v0\.10\.0;"):
+        inspect_repository(repository, config, git_environment)
+
+
+def test_git_failure_shows_command_without_fixed_options(
+    repository: Path, git_environment: dict[str, str]
+) -> None:
+    with pytest.raises(
+        ReleaseError, match=r"^Command failed \(128\): git rev-parse --verify nope\n"
+    ):
+        git_command(repository, ("rev-parse", "--verify", "nope"), git_environment)
 
 
 def test_historic_tag_divergence_rejected(

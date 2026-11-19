@@ -2,17 +2,27 @@ import os
 import shlex
 import shutil
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from curtaincall.config import validate_paths, validate_template
-from curtaincall.errors import ReleaseError
-from curtaincall.git import changed_paths, git_command, inspect_repository, run_command
+from curtaincall.errors import ReleaseCancelled, ReleaseError, name_list, short_id
+from curtaincall.git import (
+    changed_paths,
+    git_command,
+    head_ref,
+    inspect_repository,
+    is_ancestor,
+    resolve_revision,
+    run_command,
+)
 from curtaincall.models import (
     Command,
     Location,
     Proposal,
+    RefSnapshot,
     ReleaseConfig,
     ReleaseRequest,
     ReleaseState,
@@ -25,8 +35,7 @@ def _head(root: Path, environment: Mapping[str, str]) -> str:
 
 
 def _require_position(root: Path, branch: str, head: str, environment: Mapping[str, str]) -> None:
-    current_branch = git_command(root, ("symbolic-ref", "--quiet", "HEAD"), environment).strip()
-    if current_branch != f"refs/heads/{branch}" or _head(root, environment) != head:
+    if head_ref(root, environment) != f"refs/heads/{branch}" or _head(root, environment) != head:
         raise ReleaseError(
             "Preparation changed HEAD or switched branches; inspect local artifacts."
         )
@@ -138,17 +147,166 @@ def prepare(
             validate_paths(root, config)
 
 
+def _ref_changes(
+    before: Mapping[str, str], after: Mapping[str, str], label: Callable[[str], str]
+) -> list[str]:
+    return [
+        *(
+            f"{label(name)} appeared at {short_id(after[name])}"
+            for name in sorted(after.keys() - before.keys())
+        ),
+        *(
+            f"{label(name)} was deleted (was {short_id(before[name])})"
+            for name in sorted(before.keys() - after.keys())
+        ),
+        *(
+            f"{label(name)} moved from {short_id(before[name])} to {short_id(after[name])}"
+            for name in sorted(before.keys() & after.keys())
+            if before[name] != after[name]
+        ),
+    ]
+
+
+def _remote_label(ref: str) -> str:
+    if ref.startswith("refs/tags/"):
+        return f"origin's tag {ref.removeprefix('refs/tags/')}"
+    return f"origin's {ref.removeprefix('refs/heads/')}"
+
+
+def _unpeeled(refs: RefSnapshot) -> dict[str, str]:
+    return {ref: object_id for ref, object_id in refs if not ref.endswith("^{}")}
+
+
+def _state_changes(reviewed: ReleaseState, current: ReleaseState, head: str) -> list[str]:
+    return [
+        *(
+            [f"HEAD moved from {short_id(head)} to {short_id(current.head)}"]
+            if current.head != head
+            else []
+        ),
+        *(["origin's URL changed"] if current.origin != reviewed.origin else []),
+        *_ref_changes(
+            _unpeeled(reviewed.remote_refs), _unpeeled(current.remote_refs), _remote_label
+        ),
+        *_ref_changes(
+            {tag.name: tag.object_id for tag in reviewed.local_tags},
+            {tag.name: tag.object_id for tag in current.local_tags},
+            lambda name: f"local tag {name}",
+        ),
+    ]
+
+
 def _require_reviewed(reviewed: ReleaseState, current: ReleaseState, head: str) -> None:
-    if (
-        current.head != head
-        or current.branch != reviewed.branch
-        or current.origin != reviewed.origin
-        or current.remote_refs != reviewed.remote_refs
-        or current.local_tags != reviewed.local_tags
-    ):
+    changes = _state_changes(reviewed, current, head)
+    if changes:
         raise ReleaseError(
-            "The reviewed repository state changed; inspect it and start a new release."
+            f"The reviewed repository state changed ({'; '.join(changes)}); "
+            "inspect it and start a new release."
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _Leftovers:
+    branch: str
+    start: str
+    tip: str | None
+    new_commits: int | None
+    head: str | None
+    head_ref: str | None
+    tag: str | None
+    uncommitted: frozenset[str]
+
+    @property
+    def on_branch(self) -> bool:
+        return self.head_ref == f"refs/heads/{self.branch}"
+
+    @property
+    def changed(self) -> bool:
+        return (
+            self.tip != self.start
+            or not self.on_branch
+            or self.tag is not None
+            or bool(self.uncommitted)
+        )
+
+
+def _branch_clause(leftovers: _Leftovers) -> str:
+    branch = f"Branch {leftovers.branch}"
+    if leftovers.tip == leftovers.start:
+        return f"{branch} is unchanged"
+    if leftovers.tip is None:
+        return f"{branch} was deleted"
+    count = (
+        ""
+        if leftovers.new_commits is None
+        else f" ({leftovers.new_commits} new commit{'' if leftovers.new_commits == 1 else 's'})"
+    )
+    moved = f"{short_id(leftovers.start)} to {short_id(leftovers.tip)}"
+    return f"{branch} moved from {moved}{count}"
+
+
+def _head_clauses(leftovers: _Leftovers) -> list[str]:
+    if leftovers.on_branch:
+        return []
+    position = (
+        "detached"
+        if leftovers.head_ref is None
+        else (f"on branch {leftovers.head_ref.removeprefix('refs/heads/')!r}")
+    )
+    commit = "" if leftovers.head is None else f" at {short_id(leftovers.head)}"
+    return [f"HEAD is {position}{commit}"]
+
+
+def _describe_leftovers(leftovers: _Leftovers | None) -> str:
+    if leftovers is None:
+        return (
+            "Inspect the repository for preparation commits, a switched branch, "
+            "uncommitted changes or a local tag."
+        )
+    clauses = [
+        _branch_clause(leftovers),
+        *_head_clauses(leftovers),
+        *([f"local tag {leftovers.tag} was created"] if leftovers.tag is not None else []),
+        f"uncommitted changes: {name_list(map(repr, sorted(leftovers.uncommitted)))}"
+        if leftovers.uncommitted
+        else "the worktree is clean",
+    ]
+    return "; ".join(clauses) + "."
+
+
+def _new_commits(
+    root: Path, start: str, tip: str | None, environment: Mapping[str, str]
+) -> int | None:
+    if tip is None or tip == start or not is_ancestor(root, start, tip, environment):
+        return None
+    return int(git_command(root, ("rev-list", "--count", f"{start}..{tip}"), environment).strip())
+
+
+def _leftovers(
+    root: Path, *, branch: str, start: str, tag: str, environment: Mapping[str, str]
+) -> _Leftovers | None:
+    try:
+        tip = resolve_revision(root, f"refs/heads/{branch}^{{commit}}", environment)
+        return _Leftovers(
+            branch=branch,
+            start=start,
+            tip=tip,
+            new_commits=_new_commits(root, start, tip, environment),
+            head=resolve_revision(root, "HEAD^{commit}", environment),
+            head_ref=head_ref(root, environment),
+            tag=tag
+            if resolve_revision(root, f"refs/tags/{tag}", environment) is not None
+            else None,
+            uncommitted=changed_paths(root, environment),
+        )
+    except (ReleaseError, KeyboardInterrupt):
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Prepared:
+    commit: str
+    tag_object: str
 
 
 def _tools(root: Path, config: ReleaseConfig, environment: Mapping[str, str]) -> None:
@@ -222,26 +380,10 @@ def _confirm(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> 
         _preview(config, state, make_proposal(config, state, candidate, None, False))
 
 
-def _publish(
-    root: Path,
-    config: ReleaseConfig,
-    reviewed: ReleaseState,
-    head: str,
-    version: str,
-    environment: Mapping[str, str],
-) -> None:
-    tag = config.tag_prefix + version
+def _create_tag(root: Path, sign: bool, head: str, tag: str, environment: Mapping[str, str]) -> str:
     git_command(
         root,
-        (
-            "tag",
-            "--sign" if config.sign else "--annotate",
-            "-m",
-            f"Release {tag}",
-            "--",
-            tag,
-            head,
-        ),
+        ("tag", "--sign" if sign else "--annotate", "-m", f"Release {tag}", "--", tag, head),
         environment,
     )
     tag_object = git_command(
@@ -254,6 +396,12 @@ def _publish(
         raise ReleaseError(
             "The new annotated tag does not target the prepared commit; inspect local artifacts."
         )
+    return tag_object
+
+
+def _push(
+    root: Path, origin: str, targets: Mapping[str, str], environment: Mapping[str, str]
+) -> None:
     try:
         git_command(
             root,
@@ -263,9 +411,8 @@ def _publish(
                 "--no-follow-tags",
                 "--recurse-submodules=no",
                 "--",
-                reviewed.origin,
-                f"{head}:refs/heads/{config.branch}",
-                f"{tag_object}:refs/tags/{tag}",
+                origin,
+                *(f"{object_id}:{ref}" for ref, object_id in targets.items()),
             ),
             environment,
             capture=False,
@@ -275,7 +422,36 @@ def _publish(
             f"{error}\nPublication failed; local commits and tag are preserved. "
             "The remote outcome may be uncertain: inspect remote refs before taking further action."
         ) from error
-    _report(config, tag, head)
+
+
+def _prepare_and_tag(
+    root: Path,
+    config: ReleaseConfig,
+    reviewed: ReleaseState,
+    version: str,
+    tag: str,
+    environment: Mapping[str, str],
+) -> _Prepared:
+    try:
+        prepare(root, config, version, sys.executable, environment)
+        prepared = _head(root, environment)
+        _require_reviewed(reviewed, inspect_repository(root, config, environment), prepared)
+        return _Prepared(prepared, _create_tag(root, config.sign, prepared, tag, environment))
+    except KeyboardInterrupt as error:
+        leftovers = _leftovers(
+            root, branch=config.branch, start=reviewed.head, tag=tag, environment=environment
+        )
+        raise ReleaseCancelled(
+            f"Release cancelled before the push. {_describe_leftovers(leftovers)}",
+            left_changes=leftovers is None or leftovers.changed,
+        ) from error
+    except ReleaseError as error:
+        leftovers = _leftovers(
+            root, branch=config.branch, start=reviewed.head, tag=tag, environment=environment
+        )
+        raise ReleaseError(
+            f"{error}\nCurtains did not push the release. {_describe_leftovers(leftovers)}"
+        ) from error
 
 
 def _report(config: ReleaseConfig, tag: str, head: str) -> None:
@@ -329,7 +505,12 @@ def release(
     if version is None:
         return
     _require_reviewed(reviewed, inspect_repository(root, config, environment), reviewed.head)
-    prepare(root, config, version, sys.executable, environment)
-    prepared = _head(root, environment)
-    _require_reviewed(reviewed, inspect_repository(root, config, environment), prepared)
-    _publish(root, config, reviewed, prepared, version, environment)
+    tag = config.tag_prefix + version
+    prepared = _prepare_and_tag(root, config, reviewed, version, tag, environment)
+    _push(
+        root,
+        reviewed.origin,
+        {f"refs/heads/{config.branch}": prepared.commit, f"refs/tags/{tag}": prepared.tag_object},
+        environment,
+    )
+    _report(config, tag, prepared.commit)

@@ -1,15 +1,31 @@
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from curtaincall.errors import ReleaseError
+from curtaincall.errors import ReleaseCancelled, ReleaseError
 from curtaincall.git import git_command, inspect_repository, run_command
-from curtaincall.models import Location, ReleaseConfig, ReleaseRequest, Stage
-from curtaincall.release import _report, _tools, prepare, release
+from curtaincall.models import (
+    Location,
+    ReleaseConfig,
+    ReleaseRequest,
+    ReleaseState,
+    Stage,
+    TagState,
+)
+from curtaincall.release import (
+    _describe_leftovers,
+    _Leftovers,
+    _report,
+    _state_changes,
+    _tools,
+    prepare,
+    release,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -63,6 +79,46 @@ def released(root: Path, environment: dict[str, str], tag: str = "v0.1.0") -> No
 
 def remote_refs(root: Path, environment: dict[str, str]) -> str:
     return git(root, environment, "ls-remote", "origin")
+
+
+START_ID = "a" * 40
+MOVED_ID = "b" * 40
+
+
+def state(
+    *,
+    head: str = START_ID,
+    origin: str = "origin.git",
+    remote: tuple[tuple[str, str], ...] = (),
+    tags: tuple[TagState, ...] = (),
+) -> ReleaseState:
+    return ReleaseState(head, "main", origin, remote, tags, None, (), 0)
+
+
+def leftovers(
+    *,
+    tip: str | None = START_ID,
+    new_commits: int | None = None,
+    head: str | None = START_ID,
+    head_ref: str | None = "refs/heads/main",
+    tag: str | None = None,
+    uncommitted: frozenset[str] = frozenset(),
+) -> _Leftovers:
+    return _Leftovers("main", START_ID, tip, new_commits, head, head_ref, tag, uncommitted)
+
+
+def raised_by(call: Callable[[], object]) -> BaseException:
+    try:
+        call()
+    except (ReleaseError, ReleaseCancelled, KeyboardInterrupt) as error:
+        return error
+    pytest.fail("the call did not raise")
+
+
+FALLBACK = (
+    "Inspect the repository for preparation commits, a switched branch, "
+    "uncommitted changes or a local tag."
+)
 
 
 def test_tag_only_release(
@@ -275,7 +331,10 @@ def test_reviewed_state_changes_stop_release(
         policy = config
     else:
         policy = replace(config, checks=(("git", "commit", "--allow-empty", "-m", "fix: check"),))
-    with pytest.raises(ReleaseError, match="reviewed repository state changed"):
+    head = git(repository, git_environment, "rev-parse", "HEAD")
+    with pytest.raises(
+        ReleaseError, match=rf"reviewed repository state changed \(HEAD moved from {head[:12]} to "
+    ):
         run_release(repository, policy, git_environment, yes=not during_prompt)
     assert git(repository, git_environment, "tag", "--list") == ""
 
@@ -422,7 +481,11 @@ def test_failed_stage_check_preserves_files(
     repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
 ) -> None:
     before = git(repository, git_environment, "rev-parse", "HEAD")
-    with pytest.raises(ReleaseError, match="Command failed"):
+    with pytest.raises(
+        ReleaseError,
+        match=r"Command failed \(2\).*\nCurtains did not push the release\. Branch main is unchanged; "
+        r"uncommitted changes: 'tracked\.txt'\.$",
+    ):
         run_release(
             repository,
             replace(config, stages=(stage(checks=(command("raise SystemExit(2)"),)),)),
@@ -510,7 +573,7 @@ def test_origin_redirect_after_preparation_is_rejected(
     else:
         preparation = replace(stage(), commands=(*stage().commands, command(code)))
     original = remote_refs(repository, git_environment)
-    with pytest.raises(ReleaseError, match="reviewed repository state changed"):
+    with pytest.raises(ReleaseError, match=r"state changed \(origin's URL changed\)"):
         run_release(repository, replace(config, stages=(preparation,)), git_environment)
     assert (
         git(repository, git_environment, "ls-remote", str(repository.parent / "remote.git"))
@@ -765,6 +828,7 @@ def test_historical_release_refs_revalidated_after_preparation(
 def test_remote_branch_revalidated_after_preparation(
     repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
 ) -> None:
+    initial = git(repository, git_environment, "rev-parse", "HEAD")
     (repository / "tracked.txt").write_text("before release")
     git(repository, git_environment, "commit", "-am", "fix: new change")
     before = git(repository, git_environment, "rev-parse", "HEAD")
@@ -772,7 +836,9 @@ def test_remote_branch_revalidated_after_preparation(
         "import subprocess; subprocess.run(['git','push','origin','HEAD:refs/heads/main'],check=True)"
     )
     policy = replace(config, stages=(replace(stage(), commands=(*stage().commands, update)),))
-    with pytest.raises(ReleaseError, match="reviewed repository state changed"):
+    with pytest.raises(
+        ReleaseError, match=rf"origin's main moved from {initial[:12]} to {before[:12]}\)"
+    ):
         run_release(repository, policy, git_environment)
     assert (
         git(
@@ -930,3 +996,285 @@ def test_hook_cannot_hide_undeclared_gitlink_change(
     with pytest.raises(ReleaseError, match="undeclared paths: 'module'"):
         run_release(repository, replace(config, stages=(stage(),)), git_environment)
     assert git(repository, git_environment, "tag", "--list") == ""
+
+
+def test_stage_failure_reports_what_preparation_left(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    before = git(repository, git_environment, "rev-parse", "HEAD")
+    failing = Stage(
+        ("notes.txt",),
+        (
+            command(
+                "from pathlib import Path; Path('notes.txt').write_text('x'); raise SystemExit(4)"
+            ),
+        ),
+        (),
+        "chore: notes",
+    )
+    with pytest.raises(ReleaseError) as raised:
+        run_release(repository, replace(config, stages=(stage(), failing)), git_environment)
+    after = git(repository, git_environment, "rev-parse", "HEAD")
+    assert str(raised.value).splitlines()[-1] == (
+        "Curtains did not push the release. "
+        f"Branch main moved from {before[:12]} to {after[:12]} (1 new commit); "
+        "uncommitted changes: 'notes.txt'."
+    )
+
+
+def test_untouched_failure_reports_clean_state(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    failing = replace(stage(), commands=(command("raise SystemExit(4)"),))
+    with pytest.raises(ReleaseError) as raised:
+        run_release(repository, replace(config, stages=(failing,)), git_environment)
+    assert str(raised.value).splitlines()[-1] == (
+        "Curtains did not push the release. Branch main is unchanged; the worktree is clean."
+    )
+
+
+@pytest.mark.parametrize("commit_after", [False, True])
+def test_stage_detaching_head_is_reported(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str], commit_after: bool
+) -> None:
+    script = "git checkout -q --detach" + (
+        " && git commit -q --allow-empty -m detached" if commit_after else ""
+    )
+    detach = replace(stage(), commands=(("sh", "-c", script),))
+    with pytest.raises(ReleaseError) as raised:
+        run_release(repository, replace(config, stages=(detach,)), git_environment)
+    head = git(repository, git_environment, "rev-parse", "HEAD")
+    assert str(raised.value).splitlines() == [
+        "Preparation changed HEAD or switched branches; inspect local artifacts.",
+        (
+            "Curtains did not push the release. Branch main is unchanged; "
+            f"HEAD is detached at {head[:12]}; the worktree is clean."
+        ),
+    ]
+
+
+def test_stage_deleting_release_branch_is_reported(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    delete = replace(
+        stage(), commands=(("sh", "-c", "git checkout -q --detach && git branch -q -D main"),)
+    )
+    with pytest.raises(ReleaseError) as raised:
+        run_release(repository, replace(config, stages=(delete,)), git_environment)
+    head = git(repository, git_environment, "rev-parse", "HEAD")
+    assert str(raised.value).splitlines() == [
+        "Preparation changed HEAD or switched branches; inspect local artifacts.",
+        (
+            "Curtains did not push the release. Branch main was deleted; "
+            f"HEAD is detached at {head[:12]}; the worktree is clean."
+        ),
+    ]
+
+
+def test_stage_rewriting_history_reports_move_without_count(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    before = git(repository, git_environment, "rev-parse", "HEAD")
+    rewrite = command(
+        "import subprocess; tree = subprocess.run(['git', 'write-tree'], "
+        "capture_output=True, text=True, check=True).stdout.strip(); "
+        "root = subprocess.run(['git', 'commit-tree', tree, '-m', 'root'], "
+        "capture_output=True, text=True, check=True).stdout.strip(); "
+        "subprocess.run(['git', 'reset', '--soft', root], check=True)"
+    )
+    with pytest.raises(ReleaseError) as raised:
+        run_release(
+            repository,
+            replace(config, stages=(replace(stage(), commands=(rewrite,)),)),
+            git_environment,
+        )
+    after = git(repository, git_environment, "rev-parse", "HEAD")
+    assert str(raised.value).splitlines()[-1] == (
+        "Curtains did not push the release. "
+        f"Branch main moved from {before[:12]} to {after[:12]}; the worktree is clean."
+    )
+
+
+def test_tag_left_by_failed_preparation_is_reported(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    sneaky = stage(checks=(("git", "tag", "-a", "-m", "early", "v0.1.0"),))
+    with pytest.raises(ReleaseError, match=r"only local: v0\.1\.0") as raised:
+        run_release(repository, replace(config, stages=(sneaky,)), git_environment)
+    assert (
+        str(raised.value)
+        .splitlines()[-1]
+        .endswith("(1 new commit); local tag v0.1.0 was created; the worktree is clean.")
+    )
+
+
+@pytest.mark.parametrize("left", ["nothing", "commit", "file"])
+def test_interrupted_preparation_reports_leftovers(
+    repository: Path,
+    config: ReleaseConfig,
+    git_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    left: str,
+) -> None:
+    before = git(repository, git_environment, "rev-parse", "HEAD")
+
+    def interrupted(*_: object) -> None:
+        if left == "commit":
+            git(repository, git_environment, "commit", "--allow-empty", "-m", "chore: prepare")
+        if left == "file":
+            (repository / "tracked.txt").write_text("partial")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("curtaincall.release.prepare", interrupted)
+    cancelled = raised_by(lambda: run_release(repository, config, git_environment))
+    after = git(repository, git_environment, "rev-parse", "HEAD")
+    expected = {
+        "nothing": "Branch main is unchanged; the worktree is clean.",
+        "commit": f"Branch main moved from {before[:12]} to {after[:12]} (1 new commit); "
+        "the worktree is clean.",
+        "file": "Branch main is unchanged; uncommitted changes: 'tracked.txt'.",
+    }[left]
+    assert isinstance(cancelled, ReleaseCancelled)
+    assert str(cancelled) == f"Release cancelled before the push. {expected}"
+    assert cancelled.left_changes is (left != "nothing")
+
+
+def interrupt_inspection(monkeypatch: pytest.MonkeyPatch, first: BaseException) -> None:
+    def interrupted(*_: object) -> None:
+        raise first
+
+    def interrupted_again(*_: object) -> frozenset[str]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("curtaincall.release.prepare", interrupted)
+    monkeypatch.setattr("curtaincall.release.changed_paths", interrupted_again)
+
+
+def test_second_interrupt_during_cancellation_keeps_cancellation(
+    repository: Path,
+    config: ReleaseConfig,
+    git_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interrupt_inspection(monkeypatch, KeyboardInterrupt())
+    cancelled = raised_by(lambda: run_release(repository, config, git_environment))
+    assert isinstance(cancelled, ReleaseCancelled)
+    assert str(cancelled) == f"Release cancelled before the push. {FALLBACK}"
+    assert cancelled.left_changes is True
+
+
+def test_interrupt_during_failure_inspection_keeps_failure(
+    repository: Path,
+    config: ReleaseConfig,
+    git_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interrupt_inspection(monkeypatch, ReleaseError("stage failed"))
+    failed = raised_by(lambda: run_release(repository, config, git_environment))
+    assert isinstance(failed, ReleaseError)
+    assert str(failed) == f"stage failed\nCurtains did not push the release. {FALLBACK}"
+
+
+def test_leftover_inspection_failure_keeps_original_error(
+    repository: Path,
+    config: ReleaseConfig,
+    git_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(*_: object) -> frozenset[str]:
+        raise ReleaseError("inspection broke")
+
+    monkeypatch.setattr("curtaincall.release.changed_paths", broken)
+    failing = replace(stage(), commands=(command("raise SystemExit(4)"),))
+    with pytest.raises(ReleaseError) as raised:
+        run_release(repository, replace(config, stages=(failing,)), git_environment)
+    assert str(raised.value).startswith("Command failed (4)")
+    assert str(raised.value).splitlines()[-1] == f"Curtains did not push the release. {FALLBACK}"
+
+
+@pytest.mark.parametrize(
+    "found, expected",
+    [
+        (leftovers(), "Branch main is unchanged; the worktree is clean."),
+        (
+            leftovers(
+                tip=MOVED_ID,
+                new_commits=2,
+                head=MOVED_ID,
+                head_ref="refs/heads/other",
+                tag="v1.0.0",
+                uncommitted=frozenset({"b.txt", "a.txt"}),
+            ),
+            (
+                f"Branch main moved from {START_ID[:12]} to {MOVED_ID[:12]} (2 new commits); "
+                f"HEAD is on branch 'other' at {MOVED_ID[:12]}; local tag v1.0.0 was created; "
+                "uncommitted changes: 'a.txt', 'b.txt'."
+            ),
+        ),
+        (
+            leftovers(tip=None, head=MOVED_ID, head_ref=None),
+            f"Branch main was deleted; HEAD is detached at {MOVED_ID[:12]}; the worktree is clean.",
+        ),
+        (
+            leftovers(head=None, head_ref="refs/heads/x\u009b2J\u202eevil"),
+            (
+                "Branch main is unchanged; HEAD is on branch 'x\\x9b2J\\u202eevil'; "
+                "the worktree is clean."
+            ),
+        ),
+        (
+            leftovers(tip=MOVED_ID, uncommitted=frozenset({f"{index}.txt" for index in range(7)})),
+            (
+                f"Branch main moved from {START_ID[:12]} to {MOVED_ID[:12]}; uncommitted changes: "
+                "'0.txt', '1.txt', '2.txt', '3.txt', '4.txt' and 2 more."
+            ),
+        ),
+        (
+            leftovers(uncommitted=frozenset({"new\nline\x1b[2J"})),
+            "Branch main is unchanged; uncommitted changes: 'new\\nline\\x1b[2J'.",
+        ),
+        (None, FALLBACK),
+    ],
+)
+def test_describe_leftovers(found: _Leftovers | None, expected: str) -> None:
+    assert _describe_leftovers(found) == expected
+
+
+@pytest.mark.parametrize(
+    "found, changed",
+    [
+        (leftovers(), False),
+        (leftovers(tip=MOVED_ID), True),
+        (leftovers(head_ref=None), True),
+        (leftovers(head_ref="refs/heads/other"), True),
+        (leftovers(tag="v1.0.0"), True),
+        (leftovers(uncommitted=frozenset({"a.txt"})), True),
+    ],
+)
+def test_leftovers_changed(found: _Leftovers, changed: bool) -> None:
+    assert found.changed is changed
+
+
+def test_state_changes_name_each_difference() -> None:
+    reviewed = state(
+        remote=(
+            ("refs/heads/main", START_ID),
+            ("refs/tags/v1.0.0", START_ID),
+            ("refs/tags/v1.0.0^{}", START_ID),
+        ),
+        tags=(TagState("v1.0.0", START_ID, START_ID),),
+    )
+    current = state(
+        head=MOVED_ID,
+        origin="elsewhere.git",
+        remote=(("refs/heads/main", MOVED_ID), ("refs/tags/v1.1.0", MOVED_ID)),
+        tags=(TagState("v1.0.0", MOVED_ID, MOVED_ID),),
+    )
+    assert _state_changes(reviewed, current, START_ID) == [
+        f"HEAD moved from {START_ID[:12]} to {MOVED_ID[:12]}",
+        "origin's URL changed",
+        f"origin's tag v1.1.0 appeared at {MOVED_ID[:12]}",
+        f"origin's tag v1.0.0 was deleted (was {START_ID[:12]})",
+        f"origin's main moved from {START_ID[:12]} to {MOVED_ID[:12]}",
+        f"local tag v1.0.0 moved from {START_ID[:12]} to {MOVED_ID[:12]}",
+    ]
