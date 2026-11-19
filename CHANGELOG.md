@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.0
+
+### Features
+
+- Improve release error reporting
+
 ## v1.3.1
 
 ### Fixes
