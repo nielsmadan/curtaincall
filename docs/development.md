@@ -18,7 +18,7 @@ just build
 just check-package
 ```
 
-`just check` runs Ruff lint/format validation, cyclic-import checking, strict mypy over source/tests/scripts, and pytest unit plus real Git/CLI integration tests. Pytest treats warnings as errors. Coverage measures runtime branch coverage with an 80% minimum. Formatting changes use `just format`; `just lint` and `just typecheck` run individual gates.
+`just check` runs Ruff lint/format validation, cyclic-import checking, strict mypy over source/tests/scripts, and pytest unit plus real Git/CLI integration tests. Pytest treats warnings as errors. Coverage measures runtime branch coverage with an 80% minimum. Formatting changes use `just format`; `just lint`, `just lint-imports`, `just typecheck` and `just test` run individual gates.
 
 `just build` creates the sdist, then builds the wheel from it. The sdist ships canonical docs, policy fixtures, tests and contributor/release tooling; the wheel contains only runtime code and package metadata. Build backends and isolated installation prerequisites can require downloads.
 
@@ -30,6 +30,6 @@ just check-package
 
 The CI `action` job runs the root `action.yml` with `uses: $/` on Linux and macOS, then checks that `curtains` resolves under `RUNNER_TEMP`, that the job's `python3` is unchanged and that `curtains ci` works. [test_install_action.py](../tests/test_install_action.py) covers the installer against a decoy `PYTHONPATH`. `ci` and `publish` tests call `curtaincall.ci.main` in-process against disposable repositories and the fake `gh` in `tests/fake_gh.py`; a few subprocess tests cover the executable path. The workflows reference the root action as `uses: $/` rather than `uses: ./`: `gh actions-lock` follows `$/`, so `actions.lock` records the action's own `setup-python` pin, which the runner checks.
 
-[Dependabot](../.github/dependabot.yml) updates the uv lockfile and GitHub Actions every Monday at 08:00 Europe/Berlin, assigns PRs to `nielsmadan`, and groups patch/minor updates per ecosystem. Major updates stay separate. Both ecosystems have a five-PR limit.
+[Dependabot](../.github/dependabot.yml) updates the uv lockfile and GitHub Actions every Monday at 08:00 Europe/Berlin, assigns PRs to `nielsmadan`, and groups patch/minor updates per ecosystem. Major updates stay separate. Both ecosystems have a five-PR limit and a seven-day cooldown before an update is proposed. [dependabot-auto-merge.yml](../.github/workflows/dependabot-auto-merge.yml) enables squash auto-merge for patch and minor uv updates once required checks pass; GitHub Actions updates always wait for review. It uses the `QUANTUMCRAFTBOT_TOKEN` secret, which must be available to Dependabot-triggered runs.
 
 `just clean` removes generated builds, reports and ordinary test caches. It leaves `.uv` prerequisites and `.cache` alone. Keep source-release instructions in [release.md](release.md); configuration and engine changes belong in their corresponding canonical pages.
