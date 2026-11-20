@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.0.0
+
+### Features
+
+- Rename policy keys and restructure the release engine
+
+
+### Maintenance
+
+- Inject tool lookup into doctor checks
+
+- Harden CI and release workflows
+
 ## v1.4.0
 
 ### Features
