@@ -25,7 +25,7 @@ def version(tag: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def project_metadata(tag: str, path: Path) -> str:
+def project_version(tag: str, path: Path) -> str:
     if version(tag) is None:
         raise WorkflowError(f"Invalid release tag: {tag!r}")
     project = tomllib.loads(path.read_text(encoding="utf-8")).get("project")
@@ -68,7 +68,18 @@ def publish_formula(formula: Path, tap_formula: Path) -> bool:
     return True
 
 
-def main() -> None:
+def _run(args: argparse.Namespace) -> None:
+    if args.operation == "project-metadata":
+        print(f"version={project_version(args.tag, args.project)}")
+    elif args.operation == "formula":
+        template = FORMULA_TEMPLATE.read_text(encoding="utf-8")
+        content = render_formula(template, args.tag, _sha256(args.archive))
+        args.output.write_text(content, encoding="utf-8")
+    elif args.operation == "publish-formula":
+        print("updated" if publish_formula(args.formula, args.tap_formula) else "skipped-newer")
+
+
+def main() -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="operation", required=True)
     metadata = subparsers.add_parser("project-metadata")
@@ -82,21 +93,13 @@ def main() -> None:
     publish.add_argument("formula", type=Path)
     publish.add_argument("tap_formula", type=Path)
     args = parser.parse_args()
-    if args.operation == "project-metadata":
-        print(f"version={project_metadata(args.tag, args.project)}")
-        return
-    if args.operation == "formula":
-        template = FORMULA_TEMPLATE.read_text(encoding="utf-8")
-        content = render_formula(template, args.tag, _sha256(args.archive))
-        args.output.write_text(content, encoding="utf-8")
-        return
-    if args.operation == "publish-formula":
-        print("updated" if publish_formula(args.formula, args.tap_formula) else "skipped-newer")
+    try:
+        _run(args)
+    except (WorkflowError, OSError, UnicodeError, ValueError, KeyboardInterrupt) as error:
+        print(f"Release workflow stopped: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except (WorkflowError, OSError, UnicodeError, ValueError, KeyboardInterrupt) as error:
-        print(f"Release workflow stopped: {error}", file=sys.stderr)
-        sys.exit(1)
+    raise SystemExit(main())

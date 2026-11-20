@@ -4,10 +4,11 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from curtaincall.config import load_config
+from curtaincall.arguments import add_location_arguments
+from curtaincall.config import load_tag_policy
 from curtaincall.errors import ReleaseError
 from curtaincall.git import (
-    command_environment,
+    OBJECT_ID,
     is_ancestor,
     is_shallow,
     object_type,
@@ -15,17 +16,12 @@ from curtaincall.git import (
     resolve_location,
     resolve_revision,
     tag_names,
+    tag_ref,
 )
 from curtaincall.models import ReleaseConfig
-from curtaincall.publish import OBJECT_ID, Publication, default_title, publish, read_assets
+from curtaincall.process import command_environment
+from curtaincall.publish import Publication, default_title, publish, read_assets
 from curtaincall.versions import previous_tag, require_release_tag
-
-
-def add_location_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--config", type=Path, help="Release JSON, relative to the starting directory"
-    )
-    parser.add_argument("--directory", type=Path, default=Path.cwd(), help="Starting directory")
 
 
 def _require_full_history(root: Path, environment: Mapping[str, str]) -> None:
@@ -35,14 +31,16 @@ def _require_full_history(root: Path, environment: Mapping[str, str]) -> None:
         )
 
 
-def _require_event_shape(tag: str, event: str | None) -> None:
-    ref = f"refs/tags/{tag}"
-    if event is not None and OBJECT_ID.fullmatch(event) is None and event != ref:
-        raise ReleaseError(f"Invalid release event {event!r}; expected a full commit SHA or {ref}.")
+def _require_expected_shape(tag: str, expected: str | None) -> None:
+    ref = tag_ref(tag)
+    if expected is not None and OBJECT_ID.fullmatch(expected) is None and expected != ref:
+        raise ReleaseError(
+            f"Invalid expected release commit {expected!r}; expected a full commit SHA or {ref}."
+        )
 
 
 def _annotated_tag_commit(root: Path, tag: str, environment: Mapping[str, str]) -> str:
-    ref = f"refs/tags/{tag}"
+    ref = tag_ref(tag)
     if resolve_revision(root, ref, environment) is None:
         raise ReleaseError(f"Release tag {tag} does not exist locally; fetch tags.")
     kind = object_type(root, ref, environment)
@@ -54,11 +52,14 @@ def _annotated_tag_commit(root: Path, tag: str, environment: Mapping[str, str]) 
     return commit
 
 
-def _require_event(
-    root: Path, tag: str, event: str | None, commit: str, environment: Mapping[str, str]
+def _require_expected(
+    root: Path, tag: str, expected: str | None, commit: str, environment: Mapping[str, str]
 ) -> None:
-    if event is not None and resolve_revision(root, f"{event}^{{commit}}", environment) != commit:
-        raise ReleaseError(f"Release event {event} does not identify {tag} commit {commit}.")
+    if (
+        expected is not None
+        and resolve_revision(root, f"{expected}^{{commit}}", environment) != commit
+    ):
+        raise ReleaseError(f"Expected {expected} does not identify {tag} commit {commit}.")
 
 
 def _require_contained(
@@ -77,13 +78,17 @@ def _require_contained(
 
 
 def release_commit(
-    root: Path, config: ReleaseConfig, tag: str, event: str | None, environment: Mapping[str, str]
+    root: Path,
+    config: ReleaseConfig,
+    tag: str,
+    expected: str | None,
+    environment: Mapping[str, str],
 ) -> str:
     require_release_tag(config, tag)
-    _require_event_shape(tag, event)
+    _require_expected_shape(tag, expected)
     _require_full_history(root, environment)
     commit = _annotated_tag_commit(root, tag, environment)
-    _require_event(root, tag, event, commit, environment)
+    _require_expected(root, tag, expected, commit, environment)
     if config.repository is not None:
         require_origin_repository(root, config.repository, environment)
     _require_contained(root, config, commit, environment)
@@ -101,7 +106,7 @@ def _find_previous_tag(
 def _run_validate_tag(
     args: argparse.Namespace, root: Path, config: ReleaseConfig, environment: Mapping[str, str]
 ) -> str:
-    return release_commit(root, config, args.tag, args.event, environment) + "\n"
+    return release_commit(root, config, args.tag, args.expected, environment) + "\n"
 
 
 def _run_previous_tag(
@@ -114,13 +119,11 @@ def _run_previous_tag(
 def _run_publish(
     args: argparse.Namespace, root: Path, config: ReleaseConfig, environment: Mapping[str, str]
 ) -> str:
-    notes = (args.directory / args.notes).absolute()
     publication = Publication(
         tag=args.tag,
         target=args.target,
         title=default_title(config, args.tag) if args.title is None else args.title,
-        notes=notes,
-        body=notes.read_bytes().decode("utf-8"),
+        notes=(args.directory / args.notes).absolute(),
         assets=read_assets([(args.directory / path).absolute() for path in args.assets]),
         prerelease=args.prerelease,
         latest=not args.not_latest,
@@ -133,16 +136,20 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="curtains ci", description="Verify and publish releases in CI."
     )
+    add_location_arguments(parser)
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     validate = commands.add_parser(
         "validate-tag",
         help="Print the release commit of a valid, contained release tag",
         description="Print the release commit of a valid, contained release tag.",
     )
-    add_location_arguments(validate)
+    add_location_arguments(validate, defaults=False)
     validate.add_argument("tag", metavar="TAG")
     validate.add_argument(
-        "event", nargs="?", metavar="EVENT", help="Full commit SHA or refs/tags/TAG"
+        "expected",
+        nargs="?",
+        metavar="EXPECTED",
+        help="Full commit SHA or refs/tags/TAG the tag must identify",
     )
     validate.set_defaults(handler=_run_validate_tag)
     previous = commands.add_parser(
@@ -150,7 +157,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Print the highest release tag lower than TAG",
         description="Print the highest release tag lower than TAG, or nothing.",
     )
-    add_location_arguments(previous)
+    add_location_arguments(previous, defaults=False)
     previous.add_argument("tag", metavar="TAG")
     previous.set_defaults(handler=_run_previous_tag)
     publication = commands.add_parser(
@@ -161,7 +168,7 @@ def _parser() -> argparse.ArgumentParser:
             "Relative FILE and ASSET paths resolve against --directory."
         ),
     )
-    add_location_arguments(publication)
+    add_location_arguments(publication, defaults=False)
     publication.add_argument("tag", metavar="TAG")
     publication.add_argument("target", metavar="TARGET", help="Full commit SHA the tag identifies")
     publication.add_argument(
@@ -183,7 +190,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _execute(args: argparse.Namespace, environment: Mapping[str, str]) -> str:
     location = resolve_location(args.directory, args.config, environment)
-    config = load_config(location.config_path)
+    config = load_tag_policy(location.config_path)
     output: str = args.handler(args, location.root, config, environment)
     return output
 
@@ -195,7 +202,7 @@ def main(argv: Sequence[str]) -> int:
     except KeyboardInterrupt:
         print("curtains: interrupted", file=sys.stderr)
         return 130
-    except (ReleaseError, OSError, UnicodeError, ValueError) as error:
+    except ReleaseError as error:
         print(f"curtains: {error}", file=sys.stderr)
         return 1
     return 0

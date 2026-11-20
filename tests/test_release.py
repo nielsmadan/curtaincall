@@ -7,25 +7,26 @@ from pathlib import Path
 
 import pytest
 
-from curtaincall.errors import ReleaseCancelled, ReleaseError
-from curtaincall.git import git_command, inspect_repository, run_command
+from curtaincall.errors import NothingToRelease, ReleaseCancelled, ReleaseError
+from curtaincall.git import git_command
+from curtaincall.inspection import inspect_repository
+from curtaincall.leftovers import Leftovers, describe_leftovers
 from curtaincall.models import (
-    Location,
     ReleaseConfig,
     ReleaseRequest,
-    ReleaseState,
+    RepositorySnapshot,
     Stage,
     TagState,
 )
+from curtaincall.process import run_command
 from curtaincall.release import (
-    _describe_leftovers,
-    _Leftovers,
     _report,
+    _require_tools,
     _state_changes,
-    _tools,
-    prepare,
     release,
 )
+from curtaincall.stages import prepare
+from tests.helpers import executable
 
 pytestmark = pytest.mark.integration
 
@@ -47,7 +48,7 @@ def stage(
     return Stage(files, (command(code),), checks, "chore: prepare {version}")
 
 
-def run_release(
+def run_release(  # noqa: PLR0913
     root: Path,
     config: ReleaseConfig,
     environment: dict[str, str],
@@ -55,19 +56,19 @@ def run_release(
     dry_run: bool = False,
     yes: bool = True,
     version: str | None = None,
+    prompt: Callable[[str], str] | None = None,
 ) -> None:
     release(
-        Location(root, root / "scripts/release.json"),
+        root,
         config,
-        ReleaseRequest(version, dry_run, yes),
+        ReleaseRequest(version=version, dry_run=dry_run, yes=yes),
         environment,
+        prompt=prompt,
     )
 
 
 def hook(root: Path, name: str, code: str) -> None:
-    path = root / ".git/hooks" / name
-    path.write_text(f"#!{sys.executable}\n{code}\n")
-    path.chmod(0o755)
+    executable(root / ".git/hooks" / name, f"#!{sys.executable}\n{code}\n")
 
 
 def released(root: Path, environment: dict[str, str], tag: str = "v0.1.0") -> None:
@@ -91,8 +92,8 @@ def state(
     origin: str = "origin.git",
     remote: tuple[tuple[str, str], ...] = (),
     tags: tuple[TagState, ...] = (),
-) -> ReleaseState:
-    return ReleaseState(head, "main", origin, remote, tags, None, (), 0)
+) -> RepositorySnapshot:
+    return RepositorySnapshot(head, origin, remote, tags)
 
 
 def leftovers(
@@ -103,8 +104,8 @@ def leftovers(
     head_ref: str | None = "refs/heads/main",
     tag: str | None = None,
     uncommitted: frozenset[str] = frozenset(),
-) -> _Leftovers:
-    return _Leftovers("main", START_ID, tip, new_commits, head, head_ref, tag, uncommitted)
+) -> Leftovers:
+    return Leftovers("main", START_ID, tip, new_commits, head, head_ref, tag, uncommitted)
 
 
 def raised_by(call: Callable[[], object]) -> BaseException:
@@ -187,7 +188,7 @@ def test_dry_run_invokes_no_commands_or_extra_tools(
     policy = replace(
         config,
         tools=("curtaincall-missing-tool",),
-        checks=(trap,),
+        preflight=(trap,),
         suggest=trap,
         stages=(Stage(("tracked.txt",), (trap,), (trap,), "release"),),
     )
@@ -198,6 +199,16 @@ def test_dry_run_invokes_no_commands_or_extra_tools(
     assert "Built-in estimate only" in capsys.readouterr().out
 
 
+def test_dry_run_leaves_git_directory_untouched(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    os.utime(repository / "tracked.txt", (1, 1))
+    index = repository / ".git/index"
+    before = index.read_bytes()
+    run_release(repository, config, git_environment, dry_run=True)
+    assert index.read_bytes() == before
+
+
 @pytest.mark.parametrize("answer", ["", "n", "no"])
 def test_cancel_before_preparation(
     repository: Path,
@@ -206,10 +217,14 @@ def test_cancel_before_preparation(
     monkeypatch: pytest.MonkeyPatch,
     answer: str,
 ) -> None:
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _: answer)
     before = inspect_repository(repository, config, git_environment)
-    run_release(repository, replace(config, stages=(stage(),)), git_environment, yes=False)
+    run_release(
+        repository,
+        replace(config, stages=(stage(),)),
+        git_environment,
+        yes=False,
+        prompt=lambda _: answer,
+    )
     assert inspect_repository(repository, config, git_environment) == before
 
 
@@ -220,7 +235,6 @@ def test_interactive_override_is_previewed_again(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     answers = iter(("v2.0.0", "y"))
     previews = iter(("first release -> v0.1.0", "first release -> v2.0.0"))
 
@@ -231,8 +245,7 @@ def test_interactive_override_is_previewed_again(
         assert "Features:\n  - feat: initial\nBreaking changes: none\n" in output
         return next(answers)
 
-    monkeypatch.setattr("builtins.input", answer)
-    run_release(repository, config, git_environment, yes=False)
+    run_release(repository, config, git_environment, yes=False, prompt=answer)
     assert git(repository, git_environment, "tag", "--list") == "v2.0.0"
 
 
@@ -264,7 +277,6 @@ def test_checks_run_before_confirmation(
     check = command(
         f"from pathlib import Path; Path({str(marker)!r}).write_text('passed'); print('CHECKS FINISHED')"
     )
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
     def answer(_: str) -> str:
         assert marker.read_text() == "passed"
@@ -285,8 +297,9 @@ def test_checks_run_before_confirmation(
         ]
         return ""
 
-    monkeypatch.setattr("builtins.input", answer)
-    run_release(repository, replace(config, checks=(check,)), git_environment, yes=False)
+    run_release(
+        repository, replace(config, preflight=(check,)), git_environment, yes=False, prompt=answer
+    )
     assert git(repository, git_environment, "tag", "--list") == "v0.1.0"
 
 
@@ -300,11 +313,13 @@ def test_summary_respects_configured_paths(
     (repository / "other.txt").write_text("outside scope")
     git(repository, git_environment, "add", "other.txt")
     git(repository, git_environment, "commit", "-m", "feat!: unrelated feature")
-    run_release(repository, replace(config, paths=("tracked.txt",)), git_environment, dry_run=True)
+    run_release(
+        repository, replace(config, history_paths=("tracked.txt",)), git_environment, dry_run=True
+    )
     assert capsys.readouterr().out.splitlines() == [
         "",
         "Example: v0.1.0 -> v0.1.1",
-        "Commits since previous release (configured paths): 1",
+        "Commits since previous release (history paths): 1",
         "Branch: main; 2 commit(s) ahead of origin",
         "Changes: 0 feature(s), 1 fix(es), 0 breaking change(s)",
         "Features: none",
@@ -325,17 +340,22 @@ def test_reviewed_state_changes_stop_release(
         git(repository, git_environment, "commit", "--allow-empty", "-m", "fix: concurrent")
         return "yes"
 
-    if during_prompt:
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", change)
-        policy = config
-    else:
-        policy = replace(config, checks=(("git", "commit", "--allow-empty", "-m", "fix: check"),))
+    policy = (
+        config
+        if during_prompt
+        else replace(config, preflight=(("git", "commit", "--allow-empty", "-m", "fix: check"),))
+    )
     head = git(repository, git_environment, "rev-parse", "HEAD")
     with pytest.raises(
         ReleaseError, match=rf"reviewed repository state changed \(HEAD moved from {head[:12]} to "
     ):
-        run_release(repository, policy, git_environment, yes=not during_prompt)
+        run_release(
+            repository,
+            policy,
+            git_environment,
+            yes=not during_prompt,
+            prompt=change if during_prompt else None,
+        )
     assert git(repository, git_environment, "tag", "--list") == ""
 
 
@@ -343,9 +363,11 @@ def test_preflight_failure_preserves_state(
     repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
 ) -> None:
     before = inspect_repository(repository, config, git_environment)
-    with pytest.raises(ReleaseError, match="Command failed"):
+    with pytest.raises(ReleaseError, match=r"'raise SystemExit\(7\)' failed \(7\)$"):
         run_release(
-            repository, replace(config, checks=(command("raise SystemExit(7)"),)), git_environment
+            repository,
+            replace(config, preflight=(command("raise SystemExit(7)"),)),
+            git_environment,
         )
     assert inspect_repository(repository, config, git_environment) == before
 
@@ -364,7 +386,7 @@ def test_missing_path_uses_system_default_tools(
     repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
 ) -> None:
     environment = {key: value for key, value in git_environment.items() if key != "PATH"}
-    _tools(repository, replace(config, tools=("sh",)), environment)
+    _require_tools(repository, replace(config, tools=("sh",)), environment)
     assert run_command(repository, ("sh", "-c", "printf system-tool-ran"), environment) == (
         "system-tool-ran"
     )
@@ -382,35 +404,57 @@ def test_missing_path_rejects_repository_only_tool(
     with pytest.raises(ReleaseError, match=f"Cannot run {tool}:"):
         run_command(repository, (tool,), environment)
     with pytest.raises(ReleaseError, match=f"Required release tool is unavailable: {tool}"):
-        _tools(repository, replace(config, tools=(tool,)), environment)
+        _require_tools(repository, replace(config, tools=(tool,)), environment)
 
 
-@pytest.mark.parametrize(
-    "output, expected",
-    [("release/0.2.0", "release/0.2.0"), ("0.1.0", "release/0.1.0"), ("0.0.1", "release/0.1.0")],
-)
 def test_custom_suggestion(
-    repository: Path,
-    config: ReleaseConfig,
-    git_environment: dict[str, str],
-    output: str,
-    expected: str,
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
 ) -> None:
     released(repository, git_environment, "release/0.1.0")
-    policy = replace(config, tag_prefix="release/", suggest=command(f"print({output!r})"))
+    policy = replace(config, tag_prefix="release/", suggest=command("print('release/0.2.0')"))
     run_release(repository, policy, git_environment)
-    assert git(repository, git_environment, "tag", "--list").splitlines()[-1] == expected
+    assert git(repository, git_environment, "tag", "--list").splitlines() == [
+        "release/0.1.0",
+        "release/0.2.0",
+    ]
+
+
+@pytest.mark.parametrize("output", ["0.1.0", "0.0.1"])
+def test_unattended_release_without_bump_releases_nothing(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str], output: str
+) -> None:
+    released(repository, git_environment, "release/0.1.0")
+    marker = repository.parent / "checked"
+    policy = replace(
+        config,
+        tag_prefix="release/",
+        suggest=command(f"print({output!r})"),
+        preflight=(command(f"from pathlib import Path; Path({str(marker)!r}).touch()"),),
+    )
+    with pytest.raises(
+        NothingToRelease,
+        match=r"^No automatic release; supply a version override to release these changes\.$",
+    ):
+        run_release(repository, policy, git_environment)
+    assert marker.exists() is False
+    assert git(repository, git_environment, "tag", "--list") == "release/0.1.0"
 
 
 @pytest.mark.parametrize(
-    "code", ["print('invalid')", "print('0.2.0\\n0.3.0')", "raise SystemExit(3)", "pass"]
+    "code, reason",
+    [
+        ("print('invalid')", "canonical"),
+        ("print('0.2.0\\n0.3.0')", "canonical"),
+        ("raise SystemExit(3)", r"failed \(3\)"),
+        ("pass", "canonical"),
+    ],
 )
 def test_invalid_suggestion_fails(
-    repository: Path, config: ReleaseConfig, git_environment: dict[str, str], code: str
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str], code: str, reason: str
 ) -> None:
     released(repository, git_environment)
     before = inspect_repository(repository, config, git_environment)
-    with pytest.raises(ReleaseError):
+    with pytest.raises(ReleaseError, match=reason):
         run_release(repository, replace(config, suggest=command(code)), git_environment)
     assert inspect_repository(repository, config, git_environment) == before
 
@@ -483,7 +527,7 @@ def test_failed_stage_check_preserves_files(
     before = git(repository, git_environment, "rev-parse", "HEAD")
     with pytest.raises(
         ReleaseError,
-        match=r"Command failed \(2\).*\nCurtains did not push the release\. Branch main is unchanged; "
+        match=r"failed \(2\)\nCurtains did not push the release\. Branch main is unchanged; "
         r"uncommitted changes: 'tracked\.txt'\.$",
     ):
         run_release(
@@ -524,7 +568,7 @@ def test_hook_content_fails_second_check(
     check = command(
         "from pathlib import Path; assert Path('tracked.txt').read_text() == '{version}'"
     )
-    with pytest.raises(ReleaseError, match="Command failed"):
+    with pytest.raises(ReleaseError, match=r"' failed \(1\)\nCurtains did not push"):
         run_release(repository, replace(config, stages=(stage(checks=(check,)),)), git_environment)
     assert git(repository, git_environment, "rev-parse", "HEAD") != before
     assert git(repository, git_environment, "show", "HEAD:tracked.txt") == "bad"
@@ -546,8 +590,14 @@ def test_hook_integrity_failures(
         "pre-commit" if hook_kind == "scope" else "post-commit",
         "from pathlib import Path\nimport subprocess\n" + codes[hook_kind],
     )
+    reason = {
+        "scope": "Preparation changed undeclared paths: 'bad.txt'",
+        "dirty": "Preparation left a dirty worktree or index",
+        "extra_commit": "exactly the captured HEAD as its single parent",
+        "branch": "Preparation changed HEAD or switched branches",
+    }[hook_kind]
     before = remote_refs(repository, git_environment)
-    with pytest.raises(ReleaseError):
+    with pytest.raises(ReleaseError, match=reason):
         run_release(repository, replace(config, stages=(stage(),)), git_environment)
     assert remote_refs(repository, git_environment) == before
     assert git(repository, git_environment, "tag", "--list") == ""
@@ -616,7 +666,7 @@ def test_second_rewrite_after_preparation_is_rejected(
     original = git(remote, git_environment, "show-ref")
     git(repository, git_environment, "remote", "set-url", "origin", "alias:")
     git(repository, git_environment, "config", f"url.{remote}.insteadOf", "alias:")
-    assert inspect_repository(repository, config, git_environment).origin == str(remote)
+    assert inspect_repository(repository, config, git_environment).snapshot.origin == str(remote)
     code = f"import subprocess; subprocess.run(['git','config',{f'url.{other}.insteadOf'!r},{str(remote)!r}], check=True)"
     if from_hook:
         hook(repository, "post-commit", code)
@@ -665,7 +715,7 @@ def test_atomic_rejection_and_nonatomic_control(
     assert marker.read_text() == "rejected"
     assert remote_refs(repository, git_environment) == before
     assert git(repository, git_environment, "cat-file", "-t", tag_object) == "tag"
-    with pytest.raises(ReleaseError, match="Command failed"):
+    with pytest.raises(ReleaseError, match=r"git push --no-follow-tags .* failed \(1\)"):
         git(
             repository,
             git_environment,
@@ -701,8 +751,8 @@ def test_two_part_and_directory_allowlist(
 ) -> None:
     policy = replace(
         config,
-        components=2,
-        initial_version="1.0",
+        version_parts=2,
+        initial_version=(1, 0),
         stages=(
             stage(
                 "from pathlib import Path; Path('allowed/sub').mkdir(parents=True); Path('allowed/sub/a').write_text('{version}')",
@@ -722,7 +772,11 @@ def test_prepare_preserves_literal_filename(
         f"from pathlib import Path; Path({name!r}).write_text('{{version}}')", files=(name,)
     )
     prepare(
-        repository, replace(config, stages=(preparation,)), "0.1.0", sys.executable, git_environment
+        repository,
+        replace(config, stages=(preparation,)),
+        (0, 1, 0),
+        sys.executable,
+        git_environment,
     )
     assert git(repository, git_environment, "show", f"HEAD:{name}") == "0.1.0"
     assert os.fsencode(name) in os.fsencode(
@@ -806,7 +860,7 @@ def test_unrelated_refs_may_change_during_release(
     policy = (
         replace(config, stages=(Stage(("tracked.txt",), commands, (), "unchanged"),))
         if during_stage
-        else replace(config, checks=commands)
+        else replace(config, preflight=commands)
     )
     run_release(repository, policy, git_environment)
     assert git(repository, git_environment, "tag", "--list").splitlines() == ["unrelated", "v0.1.0"]
@@ -919,7 +973,7 @@ def test_sign_without_key_fails_before_commands(
     marker = repository.parent / "checked"
     policy = replace(
         config,
-        checks=(command(f"from pathlib import Path; Path({str(marker)!r}).touch()"),),
+        preflight=(command(f"from pathlib import Path; Path({str(marker)!r}).touch()"),),
         stages=(stage(),),
         sign=True,
     )
@@ -942,6 +996,42 @@ def test_override_requires_relevant_history(
     assert git(repository, git_environment, "tag", "--list") == "v0.1.0"
 
 
+def test_invalid_interactive_answer_asks_again(
+    repository: Path,
+    config: ReleaseConfig,
+    git_environment: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answers = iter(("ys", "1.3", "v0.2.0", "y"))
+    run_release(repository, config, git_environment, yes=False, prompt=lambda _: next(answers))
+    output = capsys.readouterr().out
+    assert "Expected a canonical 3-part version, got 'ys'." in output
+    assert "Expected a canonical 3-part version, got '1.3'." in output
+    assert git(repository, git_environment, "tag", "--list") == "v0.2.0"
+
+
+def test_missing_terminal_fails_before_preflight(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str]
+) -> None:
+    marker = repository.parent / "checked"
+    policy = replace(
+        config,
+        preflight=(command(f"from pathlib import Path; Path({str(marker)!r}).touch()"),),
+        suggest=command(f"from pathlib import Path; Path({str(marker)!r}).touch()"),
+    )
+    with pytest.raises(ReleaseError, match="Interactive confirmation requires a terminal"):
+        run_release(repository, policy, git_environment, yes=False)
+    assert marker.exists() is False
+
+
+@pytest.mark.parametrize("keyword", ["patch", "minor", "major"])
+def test_bump_keyword_on_first_release_uses_initial_version(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str], keyword: str
+) -> None:
+    run_release(repository, config, git_environment, version=keyword)
+    assert git(repository, git_environment, "tag", "--list") == "v0.1.0"
+
+
 def test_no_automatic_bump_can_be_overridden_interactively(
     repository: Path,
     config: ReleaseConfig,
@@ -951,9 +1041,7 @@ def test_no_automatic_bump_can_be_overridden_interactively(
     released(repository, git_environment)
     policy = replace(config, suggest=command("print('0.1.0')"))
     answers = iter(("minor", "yes"))
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _: next(answers))
-    run_release(repository, policy, git_environment, yes=False)
+    run_release(repository, policy, git_environment, yes=False, prompt=lambda _: next(answers))
     assert git(repository, git_environment, "tag", "--list").splitlines() == ["v0.1.0", "v0.2.0"]
 
 
@@ -1147,7 +1235,7 @@ def interrupt_inspection(monkeypatch: pytest.MonkeyPatch, first: BaseException) 
         raise KeyboardInterrupt
 
     monkeypatch.setattr("curtaincall.release.prepare", interrupted)
-    monkeypatch.setattr("curtaincall.release.changed_paths", interrupted_again)
+    monkeypatch.setattr("curtaincall.leftovers.changed_paths", interrupted_again)
 
 
 def test_second_interrupt_during_cancellation_keeps_cancellation(
@@ -1184,11 +1272,11 @@ def test_leftover_inspection_failure_keeps_original_error(
     def broken(*_: object) -> frozenset[str]:
         raise ReleaseError("inspection broke")
 
-    monkeypatch.setattr("curtaincall.release.changed_paths", broken)
+    monkeypatch.setattr("curtaincall.leftovers.changed_paths", broken)
     failing = replace(stage(), commands=(command("raise SystemExit(4)"),))
     with pytest.raises(ReleaseError) as raised:
         run_release(repository, replace(config, stages=(failing,)), git_environment)
-    assert str(raised.value).startswith("Command failed (4)")
+    assert str(raised.value).splitlines()[0].endswith("'raise SystemExit(4)' failed (4)")
     assert str(raised.value).splitlines()[-1] == f"Curtains did not push the release. {FALLBACK}"
 
 
@@ -1236,8 +1324,8 @@ def test_leftover_inspection_failure_keeps_original_error(
         (None, FALLBACK),
     ],
 )
-def test_describe_leftovers(found: _Leftovers | None, expected: str) -> None:
-    assert _describe_leftovers(found) == expected
+def testdescribe_leftovers(found: Leftovers | None, expected: str) -> None:
+    assert describe_leftovers(found) == expected
 
 
 @pytest.mark.parametrize(
@@ -1251,7 +1339,7 @@ def test_describe_leftovers(found: _Leftovers | None, expected: str) -> None:
         (leftovers(uncommitted=frozenset({"a.txt"})), True),
     ],
 )
-def test_leftovers_changed(found: _Leftovers, changed: bool) -> None:
+def test_leftovers_changed(found: Leftovers, changed: bool) -> None:
     assert found.changed is changed
 
 
@@ -1262,13 +1350,13 @@ def test_state_changes_name_each_difference() -> None:
             ("refs/tags/v1.0.0", START_ID),
             ("refs/tags/v1.0.0^{}", START_ID),
         ),
-        tags=(TagState("v1.0.0", START_ID, START_ID),),
+        tags=(TagState("v1.0.0", START_ID, START_ID, (1, 0, 0)),),
     )
     current = state(
         head=MOVED_ID,
         origin="elsewhere.git",
         remote=(("refs/heads/main", MOVED_ID), ("refs/tags/v1.1.0", MOVED_ID)),
-        tags=(TagState("v1.0.0", MOVED_ID, MOVED_ID),),
+        tags=(TagState("v1.0.0", MOVED_ID, MOVED_ID, (1, 0, 0)),),
     )
     assert _state_changes(reviewed, current, START_ID) == [
         f"HEAD moved from {START_ID[:12]} to {MOVED_ID[:12]}",

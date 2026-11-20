@@ -1,10 +1,11 @@
-import json
 import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tests import helpers
+from tests.helpers import commit, git, write_policy
 
 from curtaincall import ci
 from curtaincall.ci import release_commit
@@ -14,32 +15,14 @@ from curtaincall.models import ReleaseConfig
 pytestmark = pytest.mark.integration
 
 
-def git(root: Path, environment: dict[str, str], *argv: str) -> str:
-    result = subprocess.run(
-        ("git", *argv), cwd=root, env=environment, check=True, capture_output=True
-    )
-    return os.fsdecode(result.stdout).strip()
-
-
-def commit(root: Path, environment: dict[str, str], message: str = "fix: change") -> str:
-    with (root / "tracked.txt").open("a") as stream:
-        stream.write(message + "\n")
-    git(root, environment, "commit", "-am", message)
-    return git(root, environment, "rev-parse", "HEAD")
-
-
 def tag(
     root: Path, environment: dict[str, str], name: str = "v0.1.0", *, annotated: bool = True
 ) -> str:
-    git(root, environment, "tag", *(("-a", "-m", name) if annotated else ()), name)
-    git(root, environment, "push", "origin", "HEAD:refs/heads/main", f"refs/tags/{name}")
-    return git(root, environment, "rev-parse", f"refs/tags/{name}^{{commit}}")
+    return helpers.tag(root, environment, name, annotated=annotated, push_branch=True)
 
 
 def policy(root: Path, **fields: object) -> None:
-    path = root / "scripts/release.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"name": "CI Example", "initial_version": "0.1.0", **fields}))
+    write_policy(root, name="CI Example", **fields)
 
 
 @pytest.fixture
@@ -145,7 +128,9 @@ def test_rejects_well_formed_unknown_event(
     released: str,
     event: str,
 ) -> None:
-    with pytest.raises(ReleaseError, match=f"{event} does not identify v0.1.0 commit {released}"):
+    with pytest.raises(
+        ReleaseError, match=f"Expected {event} does not identify v0.1.0 commit {released}"
+    ):
         release_commit(repository, config, "v0.1.0", event, git_environment)
 
 
@@ -155,7 +140,7 @@ def test_rejects_well_formed_unknown_event(
 def test_rejects_invalid_event(
     repository: Path, git_environment: dict[str, str], config: ReleaseConfig, event: str
 ) -> None:
-    with pytest.raises(ReleaseError, match="Invalid release event"):
+    with pytest.raises(ReleaseError, match="Invalid expected release commit"):
         release_commit(repository, config, "v0.1.0", event, git_environment)
 
 
@@ -256,7 +241,7 @@ def test_cli_reports_errors(repository: Path, capsys: pytest.CaptureFixture[str]
 @pytest.mark.usefixtures("environ")
 def test_cli_missing_policy(repository: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert ci.main(("previous-tag", "--directory", str(repository), "v1.0.0")) == 1
-    assert "curtains: Cannot read release config" in capsys.readouterr().err
+    assert "curtains: Cannot read release policy" in capsys.readouterr().err
 
 
 @pytest.mark.usefixtures("environ")

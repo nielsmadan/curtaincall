@@ -4,9 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from curtaincall.config import load_config, validate_paths, validate_ref, validate_template
+from curtaincall.config import (
+    TEMPLATE_FIELDS,
+    load_config,
+    load_tag_policy,
+    template_values,
+    validate_paths,
+    validate_ref,
+    validate_template,
+)
 from curtaincall.errors import ReleaseError
 from curtaincall.models import ReleaseConfig
+from curtaincall.versions import format_version
 
 
 @pytest.mark.parametrize(
@@ -16,27 +25,12 @@ def test_existing_policy(path: Path) -> None:
     config = load_config(path)
     original = json.loads(path.read_text())
     assert config.name == original["name"]
-    assert config.initial_version == original["initial_version"]
+    assert format_version(config.initial_version) == original["initial_version"]
     assert len(config.stages) == len(original["stages"])
-    assert config.components == original.get("components", 3)
+    assert config.version_parts == original.get("version_parts", 3)
 
 
-def test_defaults_are_immutable(config: ReleaseConfig) -> None:
-    assert config.branch == "main"
-    assert config.components == 3
-    assert config.tag_prefix == "v"
-    assert config.stages == ()
-    assert config.paths == ()
-    assert config.tools == ()
-    assert config.checks == ()
-    assert config.publication == "Version tag pushed."
-    assert (config.repository, config.workflow, config.suggest, config.draft, config.sign) == (
-        None,
-        None,
-        None,
-        False,
-        False,
-    )
+def test_config_is_immutable(config: ReleaseConfig) -> None:
     with pytest.raises(FrozenInstanceError):
         config.name = "changed"  # type: ignore[misc]
 
@@ -45,9 +39,13 @@ def test_defaults_are_immutable(config: ReleaseConfig) -> None:
     "extra,context",
     [
         ({"unknown": 1}, "unknown"),
-        ({"components": True}, "components"),
-        ({"components": 3.0}, "components"),
-        ({"components": 4}, "components"),
+        ({"components": 3}, "unknown keys: components"),
+        ({"paths": []}, "unknown keys: paths"),
+        ({"checks": []}, "unknown keys: checks"),
+        ({"publication": "done"}, "unknown keys: publication"),
+        ({"version_parts": True}, "version_parts"),
+        ({"version_parts": 3.0}, "version_parts"),
+        ({"version_parts": 4}, "version_parts"),
         ({"name": ""}, "name"),
         ({"name": None}, "name"),
         ({"initial_version": "v1.0.0"}, "initial_version"),
@@ -59,19 +57,20 @@ def test_defaults_are_immutable(config: ReleaseConfig) -> None:
         ({"branch": "main..next"}, "branch"),
         ({"branch": "foo/.hidden"}, "branch"),
         ({"branch": "foo.lock/bar"}, "branch"),
-        ({"checks": "echo hi"}, "checks"),
-        ({"checks": [[]]}, "checks"),
-        ({"checks": [[""]]}, "checks"),
-        ({"checks": [["echo", None]]}, "checks"),
-        ({"checks": [["echo", "bad\0arg"]]}, "checks"),
-        ({"paths": [1]}, "paths"),
+        ({"preflight": "echo hi"}, "preflight"),
+        ({"preflight": [[]]}, "preflight"),
+        ({"preflight": [[""]]}, "preflight"),
+        ({"preflight": [["echo", None]]}, "preflight"),
+        ({"preflight": [["echo", "bad\0arg"]]}, "preflight"),
+        ({"history_paths": [1]}, "history_paths"),
+        ({"success_message": ""}, "success_message"),
         ({"tools": "git"}, "tools"),
         ({"repository": "https://github.com/org/repo"}, "repository"),
         ({"repository": None}, "repository"),
         ({"workflow": "release.yml"}, "workflow"),
         ({"repository": "org/repo", "workflow": "../release.yml"}, "workflow"),
         ({"draft": 1}, "draft"),
-        ({"draft": True}, "draft"),
+        ({"draft": True}, "draft: true requires repository"),
         ({"sign": 1}, "sign"),
         ({"sign": "true"}, "sign"),
         ({"suggest": []}, "suggest"),
@@ -107,8 +106,8 @@ def test_invalid_fields(tmp_path: Path, extra: dict[str, object], context: str) 
 )
 def test_rejects_nonliteral_paths(tmp_path: Path, value: str) -> None:
     path = tmp_path / "release.json"
-    path.write_text(json.dumps({"name": "X", "initial_version": "0.1.0", "paths": [value]}))
-    with pytest.raises(ReleaseError, match="paths"):
+    path.write_text(json.dumps({"name": "X", "initial_version": "0.1.0", "history_paths": [value]}))
+    with pytest.raises(ReleaseError, match="history_paths"):
         load_config(path)
 
 
@@ -145,7 +144,7 @@ def test_stage_templates_and_literal_top_level_commands(tmp_path: Path) -> None:
             {
                 "name": "X",
                 "initial_version": "0.1.0",
-                "checks": [["{literal}", ""]],
+                "preflight": [["{literal}", ""]],
                 "suggest": ["{literal}"],
                 "stages": [
                     {
@@ -162,7 +161,7 @@ def test_stage_templates_and_literal_top_level_commands(tmp_path: Path) -> None:
         )
     )
     config = load_config(path)
-    assert config.checks == (("{literal}", ""),)
+    assert config.preflight == (("{literal}", ""),)
     assert config.stages[0].checks == (("echo", "{revision}", "{tag}", "{tag_prefix}"),)
     assert config.stages[0].commands[1] == ("{python}", "{version}", "{{literal}}", "{tag_prefix}")
     assert config.stages[0].message == "chore: {tag_prefix}{version} {tag}"
@@ -188,8 +187,8 @@ def test_invalid_stage(tmp_path: Path, stage: dict[str, object]) -> None:
 @pytest.mark.parametrize(
     "text,match",
     [
-        ('{"name":"X","name":"Y"}', "config.name: duplicate"),
-        ('{"stages":[{"files":[],"files":[]}]}', r"config.stages\[0\].files: duplicate"),
+        ('{"name":"X","name":"Y"}', "policy.name: duplicate"),
+        ('{"stages":[{"files":[],"files":[]}]}', r"policy.stages\[0\].files: duplicate"),
         ("[]", "expected an object"),
         ("{", "Cannot read"),
     ],
@@ -214,10 +213,63 @@ def test_paths_resolve_inside_root(tmp_path: Path, config: ReleaseConfig) -> Non
     root = tmp_path / "repo"
     root.mkdir()
     (root / "inside").symlink_to(root / "new-file")
-    validate_paths(root, replace(config, paths=("inside", "not-yet-created")))
+    validate_paths(root, replace(config, history_paths=("inside", "not-yet-created")))
     (root / "outside").symlink_to(tmp_path)
     with pytest.raises(ReleaseError, match="outside"):
-        validate_paths(root, replace(config, paths=("outside/data",)))
+        validate_paths(root, replace(config, history_paths=("outside/data",)))
     (root / "metadata").symlink_to(root / ".git")
     with pytest.raises(ReleaseError, match=r"\.git"):
-        validate_paths(root, replace(config, paths=("metadata/config",)))
+        validate_paths(root, replace(config, history_paths=("metadata/config",)))
+
+
+def test_draft_needs_only_a_repository(tmp_path: Path) -> None:
+    path = tmp_path / "release.json"
+    path.write_text(
+        json.dumps({"name": "X", "initial_version": "0.1.0", "repository": "o/n", "draft": True})
+    )
+    config = load_config(path)
+    assert (config.draft, config.repository, config.workflow) == (True, "o/n", None)
+
+
+def test_tag_policy_reads_only_tag_and_publication_fields(tmp_path: Path) -> None:
+    path = tmp_path / "release.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "X",
+                "initial_version": "1.0",
+                "version_parts": 2,
+                "tag_prefix": "x-",
+                "repository": "o/n",
+                "added_later": True,
+                "stages": "not validated here",
+            }
+        )
+    )
+    policy = load_tag_policy(path)
+    assert (policy.name, policy.version_parts, policy.tag_prefix, policy.repository) == (
+        "X",
+        2,
+        "x-",
+        "o/n",
+    )
+    assert policy.stages == ()
+
+
+def test_tag_policy_still_validates_tag_fields(tmp_path: Path) -> None:
+    path = tmp_path / "release.json"
+    path.write_text(json.dumps({"name": "X", "initial_version": "1.0.0", "version_parts": 4}))
+    with pytest.raises(ReleaseError, match="version_parts"):
+        load_tag_policy(path)
+
+
+def test_template_values_cover_every_template_field(config: ReleaseConfig) -> None:
+    values = template_values(config, version=(1, 2, 3), revision="abc", python="py")
+    assert tuple(values) == TEMPLATE_FIELDS
+    assert values == {
+        "version": "1.2.3",
+        "revision": "abc",
+        "python": "py",
+        "tag": "v1.2.3",
+        "tag_prefix": "v",
+    }

@@ -11,6 +11,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts/release_workflow.py"
 TAG = "v1.2.3"
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "manifest, expected",
     [
@@ -34,6 +35,7 @@ def test_manifest_validation_cli(tmp_path: Path, manifest: str, expected: str) -
     assert expected in result.stdout + result.stderr
 
 
+@pytest.mark.integration
 def test_formula_cli_pins_tag_archive_and_digest(tmp_path: Path) -> None:
     archive = tmp_path / "source.tar.gz"
     archive.write_bytes(b"source")
@@ -62,6 +64,7 @@ def formula_for(tag: str) -> str:
     return workflow.render_formula(template, tag, "0" * 64)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "existing, expected_output, expected_tag",
     [

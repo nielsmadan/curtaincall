@@ -1,8 +1,8 @@
 {
   "branch": "master",
-  "components": 2,
+  "version_parts": 2,
   "initial_version": "0.1",
-  "checks": [
+  "preflight": [
     [
       "python3",
       "-B",
@@ -21,5 +21,5 @@
   ],
   "stages": [],
   "name": "Harlequin",
-  "publication": "Version tag for Git consumers; vim.org upload remains manual"
+  "success_message": "Version tag for Git consumers; vim.org upload remains manual"
 }

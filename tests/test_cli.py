@@ -1,4 +1,3 @@
-import json
 import os
 import pty
 import subprocess
@@ -8,19 +7,19 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pytest
+from tests.helpers import write_policy
 
 from curtaincall.cli import main
-from curtaincall.errors import ReleaseCancelled
-from curtaincall.git import git_command, run_command
+from curtaincall.errors import ReleaseCancelled, ReleaseError
+from curtaincall.git import git_command
 from curtaincall.models import Command
+from curtaincall.process import run_command
 
 pytestmark = pytest.mark.integration
 
 
 def configure(root: Path, environment: dict[str, str], **policy: object) -> None:
-    path = root / "scripts/release.json"
-    path.parent.mkdir(exist_ok=True)
-    path.write_text(json.dumps({"name": "CLI Example", "initial_version": "0.1.0", **policy}))
+    write_policy(root, name="CLI Example", **policy)
     git_command(root, ("add", "--", "scripts/release.json"), environment)
     git_command(root, ("commit", "-m", "chore: configure release"), environment)
 
@@ -71,7 +70,7 @@ def test_missing_or_invalid_config(
         (repository / "scripts/release.json").write_text(contents)
     result = invoke(repository, git_environment, "--dry-run")
     assert result.returncode == 1
-    assert "Cannot read release config" in result.stderr
+    assert "Cannot read release policy" in result.stderr
 
 
 def test_directory_config_and_inherited_context(
@@ -148,26 +147,6 @@ def communicate_bounded(process: subprocess.Popen[bytes], *, timeout: float) -> 
         raise
 
 
-def test_terminal_timeout_reaps_waiting_child(tmp_path: Path) -> None:
-    master, slave = pty.openpty()
-    try:
-        with subprocess.Popen(
-            (sys.executable, "-c", "input(); print('first answer consumed', flush=True); input()"),
-            cwd=tmp_path,
-            stdin=slave,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        ) as process:
-            os.write(master, b"\n")
-            with pytest.raises(subprocess.TimeoutExpired):
-                communicate_bounded(process, timeout=1)
-            assert process.returncode is not None
-            assert process.returncode < 0
-    finally:
-        os.close(master)
-        os.close(slave)
-
-
 def test_cli_origin_failure_redacts_credentials(
     repository: Path, git_environment: dict[str, str]
 ) -> None:
@@ -224,11 +203,14 @@ def test_publication_interruption_is_failure_with_preserved_artifacts(
         *,
         capture: bool = True,
         input_data: bytes | None = None,
+        display: str | None = None,
     ) -> str:
         if argv[0] == "git" and "push" in argv:
             pushes.append(argv)
             raise KeyboardInterrupt
-        return run_command(root, argv, environment, capture=capture, input_data=input_data)
+        return run_command(
+            root, argv, environment, capture=capture, input_data=input_data, display=display
+        )
 
     monkeypatch.setattr("curtaincall.git.run_command", interrupt_push)
     monkeypatch.setattr(os, "environ", git_environment)
@@ -263,7 +245,7 @@ def test_required_tool_path_uses_selected_root(
         git_command(
             repository, ("add", "--", str(executable.relative_to(repository))), git_environment
         )
-    configure(repository, git_environment, tools=[tool], checks=[[tool]])
+    configure(repository, git_environment, tools=[tool], preflight=[[tool]])
     environment = {**git_environment, "PATH": component + os.pathsep + git_environment["PATH"]}
     result = invoke(repository.parent, environment, "--directory", str(repository), "--yes")
     if available:
@@ -285,7 +267,7 @@ def test_interruption_has_no_traceback(
 ) -> None:
     configure(repository, git_environment)
 
-    def interrupted(*_: object) -> None:
+    def interrupted(*_: object, **__: object) -> None:
         raise interruption
 
     monkeypatch.setattr("curtaincall.cli.release", interrupted)
@@ -306,7 +288,7 @@ def test_cancellation_exit_status_reflects_leftovers(
     configure(repository, git_environment)
     message = "Release cancelled before the push. Branch main is unchanged; the worktree is clean."
 
-    def cancelled(*_: object) -> None:
+    def cancelled(*_: object, **__: object) -> None:
         raise ReleaseCancelled(message, left_changes=left_changes)
 
     monkeypatch.setattr("curtaincall.cli.release", cancelled)
@@ -371,7 +353,7 @@ def test_cli_failure_preserves_preparation(
     )
     result = invoke(repository, git_environment, "--yes")
     assert result.returncode == 1
-    assert "Command failed (9)" in result.stderr
+    assert "' failed (9)\nCurtains did not push the release." in result.stderr
     assert (repository / "tracked.txt").read_text() == "prepared"
     assert git_command(repository, ("tag", "--list"), git_environment) == ""
 
@@ -411,7 +393,7 @@ def test_dry_run_cli_skips_custom_commands(
     configure(
         repository,
         git_environment,
-        checks=[["impossible-command"]],
+        preflight=[["impossible-command"]],
         tools=["missing-tool"],
         suggest=["also-impossible"],
     )
@@ -432,16 +414,19 @@ def test_argv_from_process_routes_to_ci(
 
 
 def test_help_names_ci_commands(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as error:
         main(["--help"])
-    assert "curtains ci --help" in capsys.readouterr().out
+    assert error.value.code == 0
+    output = capsys.readouterr().out
+    assert "curtains ci --help" in output
+    assert "[--config CONFIG] [--directory DIRECTORY] ci COMMAND" in output
 
 
 @pytest.mark.parametrize(
     "arguments, expected",
     [
         (("ci", "--help"), "previous-tag"),
-        (("ci", "validate-tag", "--help"), "EVENT"),
+        (("ci", "validate-tag", "--help"), "EXPECTED"),
         (("ci", "previous-tag", "--help"), "--directory"),
     ],
 )
@@ -470,3 +455,49 @@ def test_ci_validate_tag_executable(repository: Path, git_environment: dict[str,
     head = git_command(repository, ("rev-parse", "HEAD"), git_environment)
     result = invoke(repository, git_environment, "ci", "validate-tag", "v0.1.0", head.strip())
     assert (result.returncode, result.stdout, result.stderr) == (0, head, "")
+
+
+def test_execution_error_is_reported(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(*_: object) -> None:
+        raise ReleaseError("Repository unavailable.")
+
+    monkeypatch.setattr("curtaincall.cli.resolve_location", unavailable)
+    assert main([]) == 1
+    assert capsys.readouterr().err == "curtains: Repository unavailable.\n"
+
+
+def test_unattended_run_without_bump_exits_with_nothing_released(
+    repository: Path, git_environment: dict[str, str]
+) -> None:
+    configure(repository, git_environment)
+    git_command(repository, ("tag", "-a", "-m", "v0.1.0", "v0.1.0"), git_environment)
+    git_command(repository, ("push", "origin", "refs/tags/v0.1.0"), git_environment)
+    git_command(repository, ("commit", "--allow-empty", "-m", "chore: tidy"), git_environment)
+    result = invoke(repository, git_environment, "--yes")
+    assert result.returncode == 3, result.stderr
+    assert result.stdout.splitlines()[-1] == (
+        "No automatic release; supply a version override to release these changes."
+    )
+    assert git_command(repository, ("tag", "--list"), git_environment) == "v0.1.0\n"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--directory", "{root}", "ci", "previous-tag", "v0.2.0"),
+        ("--directory={root}", "ci", "previous-tag", "v0.2.0"),
+        ("ci", "--directory", "{root}", "previous-tag", "v0.2.0"),
+        ("ci", "previous-tag", "--directory", "{root}", "v0.2.0"),
+    ],
+)
+def test_ci_location_options_before_or_after_command(
+    repository: Path, git_environment: dict[str, str], arguments: tuple[str, ...]
+) -> None:
+    configure(repository, git_environment)
+    git_command(repository, ("tag", "-a", "-m", "v0.1.0", "v0.1.0"), git_environment)
+    resolved = tuple(argument.format(root=repository) for argument in arguments)
+    result = invoke(repository.parent, git_environment, *resolved)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "v0.1.0\n"

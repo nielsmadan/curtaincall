@@ -8,6 +8,10 @@ class ReleaseError(Exception):
     pass
 
 
+class NothingToRelease(Exception):
+    pass
+
+
 class ReleaseCancelled(Exception):
     def __init__(self, message: str, *, left_changes: bool) -> None:
         super().__init__(message)

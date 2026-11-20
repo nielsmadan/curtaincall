@@ -1,53 +1,12 @@
-import os
 import re
 import shlex
-import subprocess
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Final
 
-from curtaincall.config import validate_paths, validate_ref
-from curtaincall.errors import ReleaseError, name_list, short_id
-from curtaincall.models import Command, Location, RefSnapshot, ReleaseConfig, ReleaseState, TagState
-from curtaincall.versions import tag_version, version_text
-
-
-def command_environment(source: Mapping[str, str]) -> dict[str, str]:
-    preserved = {
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_SYSTEM",
-        "GIT_CONFIG_NOSYSTEM",
-        "GIT_ALLOW_PROTOCOL",
-        "GIT_PROTOCOL_FROM_USER",
-        "GIT_ASKPASS",
-        "GIT_SSH",
-        "GIT_SSH_COMMAND",
-        "GIT_SSH_VARIANT",
-        "GIT_TERMINAL_PROMPT",
-        "GIT_PROXY_COMMAND",
-        "GIT_CURL_FTP_NO_EPSV",
-        "GIT_GSS_DELEGATION",
-    }
-    return {
-        key: value
-        for key, value in source.items()
-        if not key.startswith("GIT_")
-        or key in preserved
-        or key.startswith(("GIT_SSL_", "GIT_PROXY_SSL_", "GIT_HTTP_"))
-    }
-
-
-def _redact_urls(value: str) -> str:
-    return re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s]*@", r"\1[redacted]@", value)
-
-
-@dataclass(frozen=True, slots=True)
-class ProcessResult:
-    code: int
-    stdout: str
-    stderr: str
-
+from curtaincall.errors import ReleaseError
+from curtaincall.models import Command, Location
+from curtaincall.process import ProcessResult, process_failure, run_command, run_process
 
 GIT_PREFIX: Final[Command] = (
     "git",
@@ -56,57 +15,31 @@ GIT_PREFIX: Final[Command] = (
     "--no-optional-locks",
     "--no-lazy-fetch",
 )
+OBJECT_ID: Final = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+BRANCH_REFS: Final = "refs/heads/"
+TAG_REFS: Final = "refs/tags/"
+PEELED: Final = "^{}"
 
 
-def _display_command(argv: Command) -> str:
-    if argv[: len(GIT_PREFIX)] == GIT_PREFIX:
-        return shlex.join(("git", *argv[len(GIT_PREFIX) :]))
-    return shlex.join(argv)
+def branch_ref(name: str) -> str:
+    return BRANCH_REFS + name
 
 
-def _spawn(
-    root: Path,
-    argv: Command,
-    environment: Mapping[str, str],
-    *,
-    capture: bool,
-    input_data: bytes | None,
-) -> ProcessResult:
-    try:
-        result = subprocess.run(
-            argv, cwd=root, env=environment, capture_output=capture, check=False, input=input_data
-        )
-    except (OSError, ValueError) as error:
-        raise ReleaseError(_redact_urls(f"Cannot run {_display_command(argv)}: {error}")) from error
-    return ProcessResult(
-        result.returncode, os.fsdecode(result.stdout or b""), os.fsdecode(result.stderr or b"")
-    )
+def tag_ref(name: str) -> str:
+    return TAG_REFS + name
 
 
-def run_process(
-    root: Path, argv: Command, environment: Mapping[str, str], *, input_data: bytes | None = None
-) -> ProcessResult:
-    return _spawn(root, argv, environment, capture=True, input_data=input_data)
+def tag_targets(refs: Iterable[tuple[str, str]]) -> dict[str, tuple[str, str]]:
+    objects = dict(refs)
+    return {
+        ref.removeprefix(TAG_REFS): (object_id, objects.get(ref + PEELED, object_id))
+        for ref, object_id in objects.items()
+        if ref.startswith(TAG_REFS) and not ref.endswith(PEELED)
+    }
 
 
-def run_command(
-    root: Path,
-    argv: Command,
-    environment: Mapping[str, str],
-    *,
-    capture: bool = True,
-    input_data: bytes | None = None,
-) -> str:
-    result = _spawn(root, argv, environment, capture=capture, input_data=input_data)
-    if result.code:
-        detail = (result.stderr or result.stdout).strip()
-        raise ReleaseError(
-            _redact_urls(
-                f"Command failed ({result.code}): {_display_command(argv)}"
-                + (f"\n{detail}" if detail else "")
-            )
-        )
-    return result.stdout
+def _display(argv: Command) -> str:
+    return shlex.join(("git", *argv))
 
 
 def git_command(
@@ -118,17 +51,17 @@ def git_command(
     input_data: bytes | None = None,
 ) -> str:
     return run_command(
-        root, (*GIT_PREFIX, *argv), environment, capture=capture, input_data=input_data
+        root,
+        (*GIT_PREFIX, *argv),
+        environment,
+        capture=capture,
+        input_data=input_data,
+        display=_display(argv),
     )
 
 
 def git_process(root: Path, argv: Command, environment: Mapping[str, str]) -> ProcessResult:
-    return run_process(root, (*GIT_PREFIX, *argv), environment)
-
-
-def process_failure(what: str, result: ProcessResult) -> str:
-    detail = (result.stderr or result.stdout).strip()
-    return _redact_urls(f"{what} failed ({result.code})" + (f": {detail}" if detail else ""))
+    return run_process(root, (*GIT_PREFIX, *argv), environment, display=_display(argv))
 
 
 def is_shallow(root: Path, environment: Mapping[str, str]) -> bool:
@@ -140,6 +73,10 @@ def is_shallow(root: Path, environment: Mapping[str, str]) -> bool:
 def resolve_revision(root: Path, revision: str, environment: Mapping[str, str]) -> str | None:
     result = git_process(root, ("rev-parse", "--verify", "--quiet", revision), environment)
     return result.stdout.strip() if result.code == 0 else None
+
+
+def head_commit(root: Path, environment: Mapping[str, str]) -> str:
+    return git_command(root, ("rev-parse", "--verify", "HEAD^{commit}"), environment).strip()
 
 
 def object_type(root: Path, revision: str, environment: Mapping[str, str]) -> str:
@@ -164,13 +101,13 @@ def is_ancestor(root: Path, ancestor: str, descendant: str, environment: Mapping
 
 def tag_names(root: Path, environment: Mapping[str, str]) -> list[str]:
     return git_command(
-        root, ("for-each-ref", "--format=%(refname:strip=2)", "refs/tags/"), environment
+        root, ("for-each-ref", "--format=%(refname:strip=2)", TAG_REFS), environment
     ).splitlines()
 
 
 def remote_tag_lines(root: Path, tag: str, environment: Mapping[str, str]) -> list[str]:
-    ref = f"refs/tags/{tag}"
-    result = git_process(root, ("ls-remote", "--tags", "origin", ref, f"{ref}^{{}}"), environment)
+    ref = tag_ref(tag)
+    result = git_process(root, ("ls-remote", "--tags", "origin", ref, ref + PEELED), environment)
     if result.code:
         raise ReleaseError(process_failure("git ls-remote origin", result))
     return result.stdout.splitlines()
@@ -192,33 +129,37 @@ def resolve_location(
     if not selected.is_relative_to(root) or any(
         part.casefold() == ".git" for part in selected.relative_to(root).parts
     ):
-        raise ReleaseError("The release config must be inside the selected worktree.")
+        raise ReleaseError("The release policy must be inside the selected worktree.")
     return Location(root, selected)
 
 
+def _status_path(entry: str) -> str:
+    return entry[3:]
+
+
 def changed_paths(root: Path, environment: Mapping[str, str]) -> frozenset[str]:
-    outputs = (
-        git_command(
-            root,
-            ("diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=none", "--"),
-            environment,
+    output = git_command(
+        root,
+        (
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+            "--no-renames",
         ),
-        git_command(
-            root,
-            (
-                "diff",
-                "--cached",
-                "--name-only",
-                "-z",
-                "--no-renames",
-                "--ignore-submodules=none",
-                "--",
-            ),
-            environment,
-        ),
-        git_command(root, ("ls-files", "--others", "--exclude-standard", "-z", "--"), environment),
+        environment,
     )
-    return frozenset(path for output in outputs for path in output.split("\0") if path)
+    return frozenset(_status_path(entry) for entry in output.split("\0") if entry)
+
+
+def diff_paths(root: Path, base: str, head: str, environment: Mapping[str, str]) -> frozenset[str]:
+    output = git_command(
+        root,
+        ("diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=none", base, head, "--"),
+        environment,
+    )
+    return frozenset(path for path in output.split("\0") if path)
 
 
 def matches_repository(origin: str, repository: str) -> bool:
@@ -239,173 +180,3 @@ def require_origin_repository(root: Path, repository: str, environment: Mapping[
     require_repository(
         git_command(root, ("remote", "get-url", "origin"), environment).strip(), repository
     )
-
-
-def _origin(root: Path, config: ReleaseConfig, environment: Mapping[str, str]) -> str:
-    fetch = git_command(root, ("remote", "get-url", "--all", "origin"), environment).splitlines()
-    push = git_command(
-        root, ("remote", "get-url", "--push", "--all", "origin"), environment
-    ).splitlines()
-    if len(fetch) != 1 or len(push) != 1 or fetch != push:
-        raise ReleaseError("Origin must have exactly one matching fetch and push destination.")
-    origin = fetch[0]
-    settings = git_command(root, ("config", "--null", "--list"), environment)
-    for setting in settings.split("\0"):
-        key, _, value = setting.partition("\n")
-        if (
-            key.casefold().startswith("url.")
-            and key.casefold().endswith((".insteadof", ".pushinsteadof"))
-            and origin.startswith(value)
-        ):
-            raise ReleaseError(
-                "Origin destination is subject to another URL rewrite; use a resolved destination."
-            )
-    if config.repository is not None:
-        require_repository(origin, config.repository)
-    return origin
-
-
-def _local_tags(
-    root: Path, config: ReleaseConfig, environment: Mapping[str, str]
-) -> tuple[TagState, ...]:
-    output = git_command(
-        root, ("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags/"), environment
-    )
-    selected = []
-    for line in output.splitlines():
-        ref, object_id = line.split(" ", 1)
-        name = ref.removeprefix("refs/tags/")
-        if tag_version(name, config) is not None:
-            selected.append((name, object_id))
-    if not selected:
-        return ()
-    output = git_command(
-        root,
-        ("cat-file", "--batch-check=%(objectname) %(objecttype)"),
-        environment,
-        input_data=os.fsencode("".join(f"{oid}^{{commit}}\n" for _, oid in selected)),
-    )
-    targets = output.splitlines()
-    if len(targets) != len(selected):
-        raise ReleaseError("Cannot resolve release tags: incomplete cat-file batch response.")
-    tags = []
-    for (name, object_id), target in zip(selected, targets, strict=True):
-        commit, _, kind = target.partition(" ")
-        if kind != "commit" or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
-            raise ReleaseError(f"Release tag {name} does not resolve to an available commit.")
-        tags.append(TagState(name, object_id, commit))
-    return tuple(tags)
-
-
-def _remote_refs(
-    root: Path, origin: str, config: ReleaseConfig, environment: Mapping[str, str]
-) -> RefSnapshot:
-    output = git_command(root, ("ls-remote", "--", origin), environment)
-    refs = []
-    for line in output.splitlines():
-        object_id, ref = line.split("\t", 1)
-        name = ref.removeprefix("refs/tags/").removesuffix("^{}")
-        if ref == f"refs/heads/{config.branch}" or (
-            ref.startswith("refs/tags/") and tag_version(name, config) is not None
-        ):
-            refs.append((ref, object_id))
-    return tuple(sorted(refs))
-
-
-def _tag_list(names: set[str], config: ReleaseConfig) -> str:
-    return name_list(sorted(names, key=lambda name: tag_version(name, config) or ()))
-
-
-def _validate_history(
-    root: Path,
-    config: ReleaseConfig,
-    tags: tuple[TagState, ...],
-    refs: RefSnapshot,
-    environment: Mapping[str, str],
-) -> str:
-    remote = dict(refs)
-    branch = remote.get(f"refs/heads/{config.branch}")
-    if branch is None:
-        raise ReleaseError(f"Origin has no {config.branch} branch.")
-    if git_process(root, ("cat-file", "-e", f"{branch}^{{commit}}"), environment).code:
-        raise ReleaseError(
-            f"Origin's {config.branch} is at {short_id(branch)}, which is not in this repository; "
-            f"fetch origin and integrate origin/{config.branch} before releasing."
-        )
-    if not is_ancestor(root, branch, "HEAD", environment):
-        raise ReleaseError(
-            f"HEAD does not contain origin's {config.branch} ({short_id(branch)}); "
-            f"integrate origin/{config.branch} before releasing."
-        )
-    remote_tags = {
-        ref.removeprefix("refs/tags/")
-        for ref in remote
-        if ref.startswith("refs/tags/") and not ref.endswith("^{}")
-    }
-    local_tags = {tag.name for tag in tags}
-    if remote_tags != local_tags:
-        raise ReleaseError(
-            "Local and origin release tags differ "
-            f"(only on origin: {_tag_list(remote_tags - local_tags, config)}; "
-            f"only local: {_tag_list(local_tags - remote_tags, config)}); "
-            "inspect and synchronize tags."
-        )
-    for tag in tags:
-        ref = f"refs/tags/{tag.name}"
-        target = remote.get(f"{ref}^{{}}", remote[ref])
-        if target != tag.commit_id:
-            raise ReleaseError(f"Release tag {tag.name} has different local and origin targets.")
-    return branch
-
-
-def inspect_repository(
-    root: Path, config: ReleaseConfig, environment: Mapping[str, str]
-) -> ReleaseState:
-    validate_ref(config.branch, "config.branch", branch=True)
-    validate_ref(config.tag_prefix + config.initial_version, "config.tag_prefix")
-    validate_paths(root, config)
-    ref = head_ref(root, environment)
-    if ref is None:
-        raise ReleaseError(f"Release requires branch {config.branch}; HEAD is detached.")
-    branch = ref.removeprefix("refs/heads/")
-    if branch != config.branch:
-        raise ReleaseError(f"Release requires branch {config.branch}; current branch is {branch}.")
-    head = resolve_revision(root, "HEAD^{commit}", environment)
-    if head is None:
-        raise ReleaseError(f"Release requires a commit on {config.branch}; the branch has none.")
-    if is_shallow(root, environment):
-        raise ReleaseError("Release requires a complete, non-shallow repository.")
-    if git_command(
-        root,
-        ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"),
-        environment,
-    ):
-        raise ReleaseError(
-            "Release requires a clean worktree and index, including untracked files."
-        )
-    origin = _origin(root, config, environment)
-    tags = _local_tags(root, config, environment)
-    refs = _remote_refs(root, origin, config, environment)
-    remote_branch = _validate_history(root, config, tags, refs, environment)
-    latest_tag = max(tags, key=lambda tag: tag_version(tag.name, config) or (), default=None)
-    latest = None if latest_tag is None else version_text(config, latest_tag.name)
-    revision_range = "HEAD"
-    if latest_tag is not None:
-        if not is_ancestor(root, latest_tag.commit_id, head, environment):
-            raise ReleaseError(
-                f"HEAD does not contain the latest release tag {latest_tag.name} "
-                f"({short_id(latest_tag.commit_id)}); release from a commit that includes it."
-            )
-        revision_range = f"{latest_tag.commit_id}..{head}"
-    output = git_command(
-        root,
-        ("log", "--no-show-signature", "-z", "--format=%B", revision_range, "--", *config.paths),
-        environment,
-    )
-    messages = tuple(message.strip() for message in output.split("\0")[:-1])
-    if not any(messages):
-        raise ReleaseError("There are no relevant commits to release.")
-    ahead = int(
-        git_command(root, ("rev-list", "--count", f"{remote_branch}..{head}"), environment).strip()
-    )
-    return ReleaseState(head, branch, origin, refs, tags, latest, messages, ahead)

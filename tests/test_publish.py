@@ -2,13 +2,14 @@ import json
 import os
 import shlex
 import shutil
-import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
+from tests import helpers
+from tests.helpers import executable, git
 
 from curtaincall import ci
 
@@ -33,24 +34,8 @@ class Setup:
     environment: dict[str, str]
 
 
-def git(root: Path, environment: dict[str, str], *argv: str) -> str:
-    result = subprocess.run(
-        ("git", *argv), cwd=root, env=environment, check=True, capture_output=True
-    )
-    return os.fsdecode(result.stdout).strip()
-
-
 def write_policy(root: Path, **fields: object) -> None:
-    path = root / "scripts/release.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    policy = {"name": "CI Example", "initial_version": "0.1.0", "repository": REPOSITORY, **fields}
-    path.write_text(json.dumps({key: value for key, value in policy.items() if value is not None}))
-
-
-def executable(path: Path, content: str) -> Path:
-    path.write_text(content)
-    path.chmod(0o755)
-    return path
+    helpers.write_policy(root, name="CI Example", **{"repository": REPOSITORY, **fields})
 
 
 @pytest.fixture
@@ -391,7 +376,7 @@ def test_published_release_with_incomplete_asset_refuses(
 def test_draft_policy_leaves_complete_draft(
     setup: Setup, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_policy(setup.root, workflow="release.yml", draft=True)
+    write_policy(setup.root, draft=True)
     assert run(setup) == 0
     assert [argv[1] for argv in writes(setup)] == ["create", "upload"]
     assert release(setup)["isDraft"] is True
@@ -403,7 +388,7 @@ def test_draft_policy_leaves_complete_draft(
 def test_draft_policy_accepts_complete_draft(
     setup: Setup, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_policy(setup.root, workflow="release.yml", draft=True)
+    write_policy(setup.root, draft=True)
     complete(setup, capsys)
     assert run(setup) == 0
     assert writes(setup) == []
@@ -423,11 +408,21 @@ def test_stale_draft_with_other_title_refuses(
     )
 
 
+def test_draft_policy_rejects_not_latest(setup: Setup, capsys: pytest.CaptureFixture[str]) -> None:
+    write_policy(setup.root, draft=True)
+    assert run(setup, "--not-latest") == 1
+    assert calls(setup) == []
+    assert capsys.readouterr().err == (
+        "curtains: --not-latest has no effect for a draft policy; whoever publishes the draft "
+        "chooses whether it becomes the latest release.\n"
+    )
+
+
 def test_draft_policy_refuses_published_release(
     setup: Setup, capsys: pytest.CaptureFixture[str]
 ) -> None:
     complete(setup, capsys)
-    write_policy(setup.root, workflow="release.yml", draft=True)
+    write_policy(setup.root, draft=True)
     assert run(setup) == 1
     assert writes(setup) == []
     assert "the policy expects a draft" in capsys.readouterr().err
@@ -605,7 +600,7 @@ def test_unreachable_origin(
     [
         (
             lambda s: write_policy(s.root, repository=None),
-            "Publishing requires config.repository.",
+            "Publishing requires the policy's repository.",
         ),
         (
             lambda s: git(
@@ -724,7 +719,8 @@ def test_rejects_non_utf8_notes(setup: Setup, capsys: pytest.CaptureFixture[str]
     assert run(setup) == 1
     assert calls(setup) == []
     assert capsys.readouterr().err == (
-        "curtains: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\n"
+        f"curtains: Cannot read release notes {setup.notes}: "
+        "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\n"
     )
 
 
@@ -734,7 +730,9 @@ def test_missing_notes_file(setup: Setup, capsys: pytest.CaptureFixture[str]) ->
     assert calls(setup) == []
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err.startswith("curtains: [Errno 2] No such file or directory")
+    assert output.err.startswith(
+        f"curtains: Cannot read release notes {setup.notes}: [Errno 2] No such file or directory"
+    )
 
 
 def test_missing_gh(

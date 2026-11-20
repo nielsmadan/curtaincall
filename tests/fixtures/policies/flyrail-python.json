@@ -2,8 +2,8 @@
   "branch": "main",
   "initial_version": "0.1.0",
   "tag_prefix": "python-v",
-  "paths": ["python", "spec"],
-  "checks": [
+  "history_paths": ["python", "spec"],
+  "preflight": [
     ["just", "check"],
     ["just", "audit-dependencies"],
     ["just", "check-workflow"]
@@ -43,5 +43,5 @@
   "name": "Flyrail for Python",
   "repository": "nielsmadan/flyrail",
   "workflow": "release-python.yml",
-  "publication": "pyflyrail on PyPI and a Python GitHub release"
+  "success_message": "pyflyrail on PyPI and a Python GitHub release"
 }

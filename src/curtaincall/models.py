@@ -4,6 +4,8 @@ from typing import Literal
 
 type Command = tuple[str, ...]
 type Version = tuple[int, ...]
+type VersionParts = Literal[2, 3]
+type BumpKind = Literal["major", "minor", "patch"]
 type RefSnapshot = tuple[tuple[str, str], ...]
 
 
@@ -19,14 +21,14 @@ class Stage:
 class ReleaseConfig:
     name: str
     branch: str
-    components: Literal[2, 3]
-    initial_version: str
+    version_parts: VersionParts
+    initial_version: Version
     tag_prefix: str
-    paths: tuple[str, ...]
+    history_paths: tuple[str, ...]
     tools: tuple[str, ...]
-    checks: tuple[Command, ...]
+    preflight: tuple[Command, ...]
     stages: tuple[Stage, ...]
-    publication: str
+    success_message: str
     repository: str | None
     workflow: str | None
     suggest: Command | None
@@ -49,9 +51,8 @@ class ChangeCounts:
 
 @dataclass(frozen=True, slots=True)
 class Proposal:
-    version: str | None
+    version: Version | None
     counts: ChangeCounts
-    source: Literal["initial", "conventional", "suggest", "override"]
     suggestion_skipped: bool
 
 
@@ -60,16 +61,21 @@ class TagState:
     name: str
     object_id: str
     commit_id: str
+    version: Version
+
+
+@dataclass(frozen=True, slots=True)
+class RepositorySnapshot:
+    head: str
+    origin: str
+    remote_refs: RefSnapshot
+    local_tags: tuple[TagState, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseState:
-    head: str
-    branch: str
-    origin: str
-    remote_refs: RefSnapshot
-    local_tags: tuple[TagState, ...]
-    latest: str | None
+    snapshot: RepositorySnapshot
+    latest: Version | None
     messages: tuple[str, ...]
     ahead: int
 

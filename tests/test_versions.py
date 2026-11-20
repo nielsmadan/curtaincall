@@ -1,14 +1,19 @@
 from dataclasses import replace
-from importlib.metadata import version
 from typing import Literal
 
 import pytest
 
-from curtaincall.cli import main
 from curtaincall.errors import ReleaseError
-from curtaincall.models import ChangeCounts, ReleaseConfig, ReleaseState
+from curtaincall.models import (
+    ChangeCounts,
+    ReleaseConfig,
+    ReleaseState,
+    RepositorySnapshot,
+    Version,
+)
 from curtaincall.versions import (
     count_changes,
+    format_version,
     make_proposal,
     parse_version,
     previous_tag,
@@ -19,7 +24,12 @@ from curtaincall.versions import (
 
 
 def state(latest: str | None, *messages: str) -> ReleaseState:
-    return ReleaseState("head", "main", "origin", (), (), latest, messages, 1)
+    parsed = None if latest is None else tuple(map(int, latest.split(".")))
+    return ReleaseState(RepositorySnapshot("head", "origin", (), ()), parsed, messages, 1)
+
+
+def text(version: Version | None) -> str | None:
+    return None if version is None else format_version(version)
 
 
 @pytest.mark.parametrize(
@@ -65,9 +75,8 @@ def test_numeric_ordering() -> None:
 def test_proposals(
     config: ReleaseConfig, latest: str | None, message: str, expected: str | None
 ) -> None:
-    proposal = make_proposal(config, state(latest, message), None, None, False)
-    assert proposal.version == expected
-    assert proposal.source == ("initial" if latest is None else "conventional")
+    proposal = make_proposal(config, state(latest, message))
+    assert text(proposal.version) == expected
 
 
 def test_counts_overlap_for_breaking_features() -> None:
@@ -80,10 +89,10 @@ def test_counts_overlap_for_breaking_features() -> None:
     "message,expected", [("fix: repair", "1.3"), ("feat: add", "1.3"), ("fix!: break", "2.0")]
 )
 def test_two_part_proposals(config: ReleaseConfig, message: str, expected: str) -> None:
-    policy = replace(config, components=2, initial_version="0.1")
-    assert make_proposal(policy, state("1.2", message), None, None, False).version == expected
+    policy = replace(config, version_parts=2, initial_version=(0, 1))
+    assert text(make_proposal(policy, state("1.2", message)).version) == expected
     with pytest.raises(ReleaseError, match=r"MAJOR\.MINOR"):
-        select_version("patch", "1.2", policy)
+        select_version(policy, "patch", (1, 2))
 
 
 @pytest.mark.parametrize(
@@ -97,14 +106,27 @@ def test_two_part_proposals(config: ReleaseConfig, message: str, expected: str) 
     ],
 )
 def test_explicit_selection(config: ReleaseConfig, selection: str, expected: str) -> None:
-    assert select_version(selection, "1.2.3", config) == expected
-    assert make_proposal(config, state("1.2.3"), selection, None, False).source == "override"
+    assert text(select_version(config, selection, (1, 2, 3))) == expected
+    assert text(make_proposal(config, state("1.2.3"), override=selection).version) == expected
+
+
+@pytest.mark.parametrize("selection", ["patch", "minor", "major"])
+def test_bump_keyword_on_first_release_selects_initial_version(
+    config: ReleaseConfig, selection: str
+) -> None:
+    assert select_version(config, selection, None) == (0, 1, 0)
+    two_part = replace(config, version_parts=2, initial_version=(1, 0))
+    assert select_version(two_part, selection, None) == (1, 0)
+
+
+def test_exact_first_release_version(config: ReleaseConfig) -> None:
+    assert select_version(config, "v2.0.0", None) == (2, 0, 0)
 
 
 @pytest.mark.parametrize("value", ["1.2.3", "1.2.2", "0.9.0"])
 def test_override_must_increase(config: ReleaseConfig, value: str) -> None:
     with pytest.raises(ReleaseError, match="newer"):
-        select_version(value, "1.2.3", config)
+        select_version(config, value, (1, 2, 3))
 
 
 @pytest.mark.parametrize(
@@ -112,8 +134,8 @@ def test_override_must_increase(config: ReleaseConfig, value: str) -> None:
 )
 def test_custom_suggestions(config: ReleaseConfig, suggestion: str, expected: str | None) -> None:
     policy = replace(config, suggest=("custom",), tag_prefix="python-v")
-    result = make_proposal(policy, state("1.2.3", "feat: x"), None, suggestion, False)
-    assert (result.version, result.source) == (expected, "suggest")
+    result = make_proposal(policy, state("1.2.3", "feat: x"), suggested=suggestion)
+    assert text(result.version) == expected
 
 
 @pytest.mark.parametrize("components", [2, 3])
@@ -127,53 +149,41 @@ def test_version_boundary_preserves_bare_versions(
     suffix = ".3" if components == 3 else ""
     policy = replace(
         config,
-        components=components,
-        initial_version="0.1.0" if components == 3 else "0.1",
+        version_parts=components,
+        initial_version=(0, 1, 0) if components == 3 else (0, 1),
         tag_prefix=prefix,
         suggest=("custom",),
     )
     latest = "0.9.0" if components == 3 else "0.9"
-    assert select_version(value + suffix, latest, policy) == expected + suffix
-    result = make_proposal(policy, state(latest), None, value + suffix, False)
-    assert (result.version, result.source) == (expected + suffix, "suggest")
+    parsed = tuple(map(int, latest.split(".")))
+    assert text(select_version(policy, value + suffix, parsed)) == expected + suffix
+    result = make_proposal(policy, state(latest), suggested=value + suffix)
+    assert text(result.version) == expected + suffix
 
 
-@pytest.mark.parametrize("suggestion", [None, "", "v1.3.0", "1.3.0\nextra"])
-def test_invalid_custom_suggestion(config: ReleaseConfig, suggestion: str | None) -> None:
+@pytest.mark.parametrize(
+    "suggestion, reason",
+    [
+        (None, "did not return a version"),
+        ("", "canonical"),
+        ("v1.3.0", "canonical"),
+        ("1.3.0\nextra", "canonical"),
+    ],
+)
+def test_invalid_custom_suggestion(
+    config: ReleaseConfig, suggestion: str | None, reason: str
+) -> None:
     policy = replace(config, suggest=("custom",), tag_prefix="python-v")
-    with pytest.raises(ReleaseError):
-        make_proposal(policy, state("1.2.3"), None, suggestion, False)
+    with pytest.raises(ReleaseError, match=reason):
+        make_proposal(policy, state("1.2.3"), suggested=suggestion)
 
 
 def test_skipped_suggestion_estimate(config: ReleaseConfig) -> None:
     policy = replace(config, suggest=("custom",))
-    result = make_proposal(policy, state("1.2.3", "fix: x"), None, None, True)
-    assert (result.version, result.source, result.suggestion_skipped) == (
-        "1.2.4",
-        "conventional",
-        True,
-    )
-    assert make_proposal(policy, state(None), None, None, True).source == "initial"
-
-
-@pytest.mark.parametrize("argument", ["--help", "--version"])
-def test_cli_information(argument: str, capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as error:
-        main([argument])
-    assert error.value.code == 0
-    output = capsys.readouterr().out
-    assert (version("curtaincall") if argument == "--version" else "--dry-run") in output
-
-
-def test_execution_error_is_reported(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def unavailable(*_: object) -> None:
-        raise ReleaseError("Repository unavailable.")
-
-    monkeypatch.setattr("curtaincall.cli.resolve_location", unavailable)
-    assert main([]) == 1
-    assert capsys.readouterr().err == "curtains: Repository unavailable.\n"
+    result = make_proposal(policy, state("1.2.3", "fix: x"), suggestion_skipped=True)
+    assert (text(result.version), result.suggestion_skipped) == ("1.2.4", True)
+    first = make_proposal(policy, state(None), suggestion_skipped=True)
+    assert (text(first.version), first.suggestion_skipped) == ("0.1.0", False)
 
 
 @pytest.mark.parametrize("components", [2, 3])
@@ -183,9 +193,9 @@ def test_huge_version_has_release_error(components: Literal[2, 3]) -> None:
 
 
 def test_tag_version_selects_policy_namespace(config: ReleaseConfig) -> None:
-    assert tag_version("v1.10.0", config) == (1, 10, 0)
-    assert tag_version("rust-v1.0.0", config) is None
-    assert tag_version("v1.2", config) is None
+    assert tag_version(config, "v1.10.0") == (1, 10, 0)
+    assert tag_version(config, "rust-v1.0.0") is None
+    assert tag_version(config, "v1.2") is None
 
 
 @pytest.mark.parametrize(
@@ -217,7 +227,7 @@ def test_previous_tag_ignores_other_namespaces(config: ReleaseConfig) -> None:
 
 
 def test_previous_tag_two_part_policy(config: ReleaseConfig) -> None:
-    policy = replace(config, components=2, initial_version="0.1")
+    policy = replace(config, version_parts=2, initial_version=(0, 1))
     assert previous_tag(policy, "v1.10", ("v1.2", "v1.9", "v1.9.5", "v1.10", "v2.0")) == "v1.9"
 
 
@@ -228,8 +238,8 @@ def test_previous_tag_requires_strictly_lower_version(config: ReleaseConfig) -> 
 
 def test_previous_tag_numeric_prefix(config: ReleaseConfig) -> None:
     policy = replace(config, tag_prefix="1")
-    assert tag_version("11.2.0", policy) == (1, 2, 0)
-    assert tag_version("1.2.0", policy) is None
+    assert tag_version(policy, "11.2.0") == (1, 2, 0)
+    assert tag_version(policy, "1.2.0") is None
     assert previous_tag(policy, "12.0.0", ("1.5.0", "10.9.0", "11.2.0", "13.0.0")) == "11.2.0"
 
 

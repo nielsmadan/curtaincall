@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from curtaincall.errors import ReleaseError
-from curtaincall.git import command_environment, run_command
+from curtaincall.process import (
+    ProcessResult,
+    command_environment,
+    process_failure,
+    run_command,
+    run_process,
+)
 
 
 def test_environment_removes_git_context_and_preserves_authentication() -> None:
@@ -108,10 +114,10 @@ def test_interactive_command_inherits_streams(
 
 @pytest.mark.parametrize("capture", [True, False])
 def test_nonzero_command_is_error(tmp_path: Path, capture: bool) -> None:
-    with pytest.raises(ReleaseError, match=r"Command failed \(7\)"):
-        run_command(
-            tmp_path, (sys.executable, "-c", "import sys; sys.exit(7)"), os.environ, capture=capture
-        )
+    argv = (sys.executable, "-c", "import sys; sys.exit(7)")
+    with pytest.raises(ReleaseError, match=r"failed \(7\)$") as raised:
+        run_command(tmp_path, argv, os.environ, capture=capture)
+    assert str(raised.value).endswith("import sys; sys.exit(7)' failed (7)")
 
 
 def test_failure_includes_stderr(tmp_path: Path) -> None:
@@ -151,3 +157,35 @@ def test_command_errors_redact_url_credentials(
     assert "https://[redacted]@example.invalid/repo.git" in message
     assert "synthetic-user" not in message
     assert "synthetic-password" not in message
+
+
+def test_run_process_returns_failure_without_raising(tmp_path: Path) -> None:
+    script = "import os, sys; os.write(1, b'out\\xff'); os.write(2, b'err'); sys.exit(3)"
+    result = run_process(tmp_path, (sys.executable, "-c", script), os.environ)
+    assert result == ProcessResult(3, os.fsdecode(b"out\xff"), "err")
+
+
+def test_run_process_passes_input(tmp_path: Path) -> None:
+    script = "import sys; sys.stdout.write(sys.stdin.read().upper())"
+    result = run_process(tmp_path, (sys.executable, "-c", script), os.environ, input_data=b"abc")
+    assert result == ProcessResult(0, "ABC", "")
+
+
+def test_run_process_reports_unrunnable_command(tmp_path: Path) -> None:
+    with pytest.raises(ReleaseError, match="Cannot run /no/such/executable"):
+        run_process(tmp_path, ("/no/such/executable",), os.environ)
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (ProcessResult(1, "out\n", "err\n"), "gh release upload failed (1): err"),
+        (
+            ProcessResult(2, "https://user:token@host/x\n", ""),
+            "gh release upload failed (2): https://[redacted]@host/x",
+        ),
+        (ProcessResult(3, "", ""), "gh release upload failed (3)"),
+    ],
+)
+def test_process_failure_prefers_stderr_then_stdout(result: ProcessResult, expected: str) -> None:
+    assert process_failure("gh release upload", result) == expected

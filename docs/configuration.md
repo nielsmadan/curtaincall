@@ -17,20 +17,22 @@ Required-tool lookup uses the same root as command execution: relative `PATH` en
 | `name` | Required nonempty display name. |
 | `initial_version` | Required canonical numeric version for the first release. |
 | `branch` | Release branch; `main`. Must be a valid Git branch name. |
-| `components` | Integer `2` or `3`; `3`. Booleans are rejected. |
+| `version_parts` | Number of version parts: integer `2` (`MAJOR.MINOR`) or `3` (`MAJOR.MINOR.PATCH`); `3`. Booleans are rejected. |
 | `tag_prefix` | Nonempty prefix; `v`. Prefix + initial version must form a valid tag ref. |
-| `paths` | History scope, literal path array; `[]` means whole repository. |
+| `history_paths` | Paths whose commits count toward the next version, literal path array; `[]` means whole repository. Unrelated to a stage's `files` allowlist. |
 | `tools` | Executables required for a real run; `[]`. Slash-containing names resolve from root. |
-| `checks` | Preflight argv arrays; `[]`. Run before confirmation. |
+| `preflight` | Preflight argv arrays; `[]`. Run once before confirmation. Unrelated to a stage's `checks`, which run after that stage's commands. |
 | `stages` | Sequential preparation stages; `[]` means tag only. |
 | `suggest` | Optional single argv array returning a canonical version, optionally prefixed. |
-| `publication` | Success description; `Version tag pushed.` |
+| `success_message` | Line printed after a successful push; `Version tag pushed.` It does not configure `curtains ci publish`. |
 | `repository` | Optional GitHub `owner/name`; requires origin identity to match exactly. |
 | `workflow` | Optional `.yml`/`.yaml` filename; requires `repository`. Prints an asynchronous workflow link. |
-| `draft` | Boolean; `false`. `true` requires `workflow`; prints a draft review link. |
+| `draft` | Boolean; `false`. `true` requires `repository`: `curtains ci publish` leaves a complete draft for review, and the release command prints a draft review link. |
 | `sign` | Boolean; `false`. `true` signs preparation commits (`git commit --gpg-sign`) and the release tag (`git tag --sign`) with the configured Git signing key. A real run first signs a throwaway commit object, before preflight checks and stages run, so a missing or unusable key fails early; any later signing failure still stops the release before the push. `false` leaves signing to Git's `commit.gpgSign` and `tag.gpgSign`. |
 
-Every command is a nonempty array of strings. The executable must be nonempty; later arguments may be empty. NUL is rejected. There are no shell command strings. `checks` and `suggest` arguments are literal, with no interpolation.
+Every command is a nonempty array of strings. The executable must be nonempty; later arguments may be empty. NUL is rejected. There are no shell command strings. `preflight` and `suggest` arguments are literal, with no interpolation.
+
+Version 2.0 renamed four top-level keys; the old names are rejected as unknown keys: `components` → `version_parts`, `paths` → `history_paths`, `checks` → `preflight` and `publication` → `success_message`. Stage keys are unchanged.
 
 ## Stages
 
@@ -65,6 +67,6 @@ The preparation script is consumer-owned. The stage allowlist must cover everyth
 
 ## Version selection
 
-Without release tags, propose `initial_version`. Otherwise `feat` bumps minor, `fix`/`perf` bumps patch, and a breaking conventional header or footer bumps major (minor while a three-part version is `0.x`). Two-part policies use minor for fixes and reject `patch`. Chores alone produce no automatic bump. Numeric components have no leading zeros; prereleases are unsupported.
+Without release tags, propose `initial_version`; a `patch`, `minor` or `major` override on a first release also selects `initial_version`. Otherwise `feat` bumps minor, `fix`/`perf` bumps patch, and a breaking conventional header or footer bumps major (minor while a three-part version is `0.x`). Two-part policies use minor for fixes and reject `patch`. Chores alone produce no automatic bump. Numeric components have no leading zeros; prereleases are unsupported.
 
 A CLI override accepts `patch`, `minor`, `major`, or a canonical version with an optional configured prefix. An existing release requires a strictly greater version and relevant commits even with an override. A real custom suggestion runs only after an existing release and without an override. Invalid or failing output aborts; a valid nonincreasing suggestion means no automatic bump. Dry-run skips it and labels its conventional estimate.

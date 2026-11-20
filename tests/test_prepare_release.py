@@ -9,9 +9,11 @@ from zipfile import ZipFile
 
 import pytest
 from scripts.prepare_release import prepare_release
+from scripts.release_workflow import project_version
 
 from curtaincall.config import load_config
 from curtaincall.git import git_command
+from curtaincall.versions import format_version, release_tag
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -56,6 +58,7 @@ def test_invalid_manifest_is_not_written(tmp_path: Path, source: str) -> None:
     assert manifest.read_bytes() == before
 
 
+@pytest.mark.integration
 def test_cli_uses_script_repository_and_reports_errors(tmp_path: Path) -> None:
     scripts = tmp_path / "scripts"
     scripts.mkdir()
@@ -76,13 +79,23 @@ def test_cli_uses_script_repository_and_reports_errors(tmp_path: Path) -> None:
     assert tomllib.loads(manifest.read_text())["project"]["version"] == "0.2.0"
 
 
+@pytest.mark.parametrize("version", [(0, 1, 0), (1, 0, 0), (12, 3, 45)])
+def test_scripts_accept_the_self_policy_versions(tmp_path: Path, version: tuple[int, ...]) -> None:
+    config = load_config(ROOT / "scripts/release.json")
+    text = format_version(version)
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text('[project]\nname = "curtaincall"\nversion = "0.0.1"\n')
+    prepare_release(tmp_path, text)
+    assert project_version(release_tag(config, version), manifest) == text
+
+
 def test_self_policy_targets_existing_release_commands() -> None:
     config = load_config(ROOT / "scripts/release.json")
-    assert (config.branch, config.tag_prefix, config.initial_version) == ("main", "v", "1.0.0")
+    assert (config.branch, config.tag_prefix, config.initial_version) == ("main", "v", (1, 0, 0))
     assert config.repository == "nielsmadan/curtaincall"
     assert config.workflow == "release.yml"
     assert (ROOT / ".github/workflows" / config.workflow).is_file()
-    assert config.checks == (("just", "check-static"), ("just", "coverage"))
+    assert config.preflight == (("just", "check-static"), ("just", "coverage"))
     assert config.stages[0].checks == (("just", "build"), ("just", "check-package"))
     assert config.stages[0].files == ("pyproject.toml", "uv.lock", "CHANGELOG.md")
     assert config.stages[0].commands == (
@@ -102,6 +115,7 @@ def test_self_policy_targets_existing_release_commands() -> None:
 
 
 @pytest.mark.packaging
+@pytest.mark.integration
 def test_self_preparation_builds_selected_version(
     package_source: Path, package_environment: dict[str, str]
 ) -> None:

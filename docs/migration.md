@@ -39,17 +39,17 @@ Pin the full commit SHA of a release tag with the version in a trailing comment,
 
 | Fork command | `curtains ci` |
 | --- | --- |
-| `validate-tag [--component C] TAG [SHA]` | `validate-tag TAG [EVENT]`; the component is the policy's `tag_prefix`, so use one policy per component |
-| `previous-tag TAG` | `previous-tag TAG`; reads the policy's prefix and component count |
+| `validate-tag [--component C] TAG [SHA]` | `validate-tag TAG [EXPECTED]`; the fork's component is the policy's `tag_prefix`, so use one policy per package |
+| `previous-tag TAG` | `previous-tag TAG`; reads the policy's prefix and number of version parts |
 | `publish TAG TITLE NOTES TARGET ASSETS [--prerelease]` | `publish TAG TARGET --notes NOTES [--title TITLE] [--prerelease] [--not-latest] [ASSETS]` |
 
 Without `--title`, the title is the policy `name` and version. `publish` creates a draft, uploads, then publishes, and a retry completes what is missing.
 
-- Flyrail: one policy per component, selected with `--config` (for example `--config python/scripts/release.json`), each with its own `tag_prefix`. Pass `--not-latest` always. The policy names (`Flyrail for Python`, `Flyrail for Rust`, `Flyrail for Swift`) already produce the existing release titles, so no `--title` is needed. The fork's "at least one asset unless Swift" check moves into the workflow; `curtains ci publish` accepts zero assets.
-- Splashdown: `--title "splashdown $VERSION"`; for prereleases pass `--prerelease` and `--not-latest` together, since the fork also passed `--latest=false` for them.
+- Flyrail: one policy per package, selected with `--config` (for example `--config python/scripts/release.json`), each with its own `tag_prefix`. Pass `--not-latest` always. The policy names (`Flyrail for Python`, `Flyrail for Rust`, `Flyrail for Swift`) already produce the existing release titles, so no `--title` is needed. The fork's "at least one asset unless Swift" check moves into the workflow; `curtains ci publish` accepts zero assets.
+- Splashdown: `--title "splashdown $VERSION"`; for prereleases pass `--prerelease` and `--not-latest` together, since the fork also passed `--latest=false` for them. `--not-latest` is rejected for a `draft: true` policy, where whoever publishes the draft chooses.
 - Pratfall: `--title "pratfall $VERSION"`. Prerelease state is now verified on retry as well as at creation.
 
-The `{tag}` and `{tag_prefix}` placeholders ([configuration](configuration.md#stages)) and any other key added since a policy was written need the new version in both places: update the local `curtains` install and the action pin together, or one side rejects the policy.
+`curtains ci` reads only a policy's tag and publication fields, so a release-only key added since the action pin was chosen does not break the tag workflow. Renamed or new tag and publication fields still need the new version in both places. Version 2.0 renamed `components` to `version_parts`, `paths` to `history_paths`, `checks` to `preflight` and `publication` to `success_message` ([configuration](configuration.md#top-level-fields)); rename them in each policy when upgrading, and update the local `curtains` install and the action pin together.
 
 ## Standalone policy fixtures
 

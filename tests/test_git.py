@@ -1,6 +1,5 @@
 import os
 import subprocess
-import sys
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -9,49 +8,19 @@ import pytest
 
 from curtaincall.errors import ReleaseError
 from curtaincall.git import (
-    ProcessResult,
-    _local_tags,
-    _origin,
     changed_paths,
-    command_environment,
     git_command,
     git_process,
-    inspect_repository,
     matches_repository,
-    process_failure,
     resolve_location,
-    run_process,
 )
+from curtaincall.inspection import _local_tags, _origin, inspect_repository, tag_states
 from curtaincall.models import Command, ReleaseConfig
+from curtaincall.process import ProcessResult, command_environment
 from curtaincall.versions import make_proposal
+from tests.helpers import commit, git, tag
 
 pytestmark = pytest.mark.integration
-
-
-def git(root: Path, environment: dict[str, str], *argv: str) -> str:
-    result = subprocess.run(
-        ("git", *argv), cwd=root, env=environment, check=True, capture_output=True
-    )
-    return os.fsdecode(result.stdout).strip()
-
-
-def commit(
-    root: Path, environment: dict[str, str], message: str = "fix: change", path: str = "tracked.txt"
-) -> str:
-    (root / path).parent.mkdir(parents=True, exist_ok=True)
-    with (root / path).open("a") as stream:
-        stream.write(message + "\n")
-    git(root, environment, "add", "--", path)
-    git(root, environment, "commit", "-m", message)
-    return git(root, environment, "rev-parse", "HEAD")
-
-
-def tag(
-    root: Path, environment: dict[str, str], name: str = "v0.1.0", *, annotated: bool = True
-) -> None:
-    arguments = ("-a", "-m", name) if annotated else ()
-    git(root, environment, "tag", *arguments, name)
-    git(root, environment, "push", "origin", f"refs/tags/{name}")
 
 
 def test_initial_inspection(
@@ -64,10 +33,9 @@ def test_initial_inspection(
     assert state.latest is None
     assert state.messages == ("feat: initial",)
     assert state.ahead == 0
-    assert state.branch == "main"
-    assert state.origin == str(repository.parent / "remote.git")
-    assert state.remote_refs == (("refs/heads/main", state.head),)
-    assert state.local_tags == ()
+    assert state.snapshot.origin == str(repository.parent / "remote.git")
+    assert state.snapshot.remote_refs == (("refs/heads/main", state.snapshot.head),)
+    assert state.snapshot.local_tags == ()
     assert (repository / ".git/index").read_bytes() == before
     assert (repository / ".git/index").stat().st_mtime_ns == timestamp
     assert not (repository / ".git/FETCH_HEAD").exists()
@@ -81,13 +49,13 @@ def test_release_history(
     tag(repository, git_environment, annotated=annotated)
     head = commit(repository, git_environment, "feat: next\n\nBREAKING CHANGE: api")
     state = inspect_repository(repository, config, git_environment)
-    assert state.latest == "0.1.0"
+    assert state.latest == (0, 1, 0)
     assert state.messages == ("feat: next\n\nBREAKING CHANGE: api",)
     assert state.ahead == 1
-    assert state.head == head
-    assert state.local_tags[0].name == "v0.1.0"
-    assert state.local_tags[0].commit_id == previous
-    assert state.local_tags[0].object_id == git(
+    assert state.snapshot.head == head
+    assert state.snapshot.local_tags[0].name == "v0.1.0"
+    assert state.snapshot.local_tags[0].commit_id == previous
+    assert state.snapshot.local_tags[0].object_id == git(
         repository, git_environment, "rev-parse", "refs/tags/v0.1.0"
     )
 
@@ -101,8 +69,8 @@ def test_numeric_tag_order_and_other_namespaces(
         git(repository, git_environment, "tag", name)
     commit(repository, git_environment)
     state = inspect_repository(repository, replace(config, tag_prefix="release/"), git_environment)
-    assert state.latest == "1.10.0"
-    assert {item.name for item in state.local_tags} == {"release/1.9.0", "release/1.10.0"}
+    assert state.latest == (1, 10, 0)
+    assert {item.name for item in state.snapshot.local_tags} == {"release/1.9.0", "release/1.10.0"}
 
 
 def test_numeric_prefix_is_unambiguous(
@@ -110,10 +78,9 @@ def test_numeric_prefix_is_unambiguous(
 ) -> None:
     tag(repository, git_environment, "11.2.3")
     commit(repository, git_environment)
-    assert (
-        inspect_repository(repository, replace(config, tag_prefix="1"), git_environment).latest
-        == "1.2.3"
-    )
+    assert inspect_repository(
+        repository, replace(config, tag_prefix="1"), git_environment
+    ).latest == (1, 2, 3)
 
 
 def test_two_component_tags(
@@ -123,10 +90,10 @@ def test_two_component_tags(
     git(repository, git_environment, "tag", "v3.4.5")
     commit(repository, git_environment)
     state = inspect_repository(
-        repository, replace(config, components=2, initial_version="0.1"), git_environment
+        repository, replace(config, version_parts=2, initial_version=(0, 1)), git_environment
     )
-    assert state.latest == "1.2"
-    assert tuple(item.name for item in state.local_tags) == ("v1.2",)
+    assert state.latest == (1, 2)
+    assert tuple(item.name for item in state.snapshot.local_tags) == ("v1.2",)
 
 
 @pytest.mark.parametrize("dirty", ["unstaged", "staged", "untracked", "deleted"])
@@ -234,7 +201,14 @@ def test_origin_rejected(
             "origin",
             str(repository.parent / "other.git"),
         )
-    with pytest.raises(ReleaseError):
+    reason = {
+        "missing": "No such remote",
+        "missing-destination": "git ls-remote",
+        "multiple-fetch": "exactly one matching fetch and push destination",
+        "multiple-push": "exactly one matching fetch and push destination",
+        "mismatched-push": "exactly one matching fetch and push destination",
+    }[mode]
+    with pytest.raises(ReleaseError, match=reason):
         inspect_repository(repository, config, git_environment)
 
 
@@ -382,9 +356,7 @@ def test_tag_differences_listed_in_version_order(
 def test_git_failure_shows_command_without_fixed_options(
     repository: Path, git_environment: dict[str, str]
 ) -> None:
-    with pytest.raises(
-        ReleaseError, match=r"^Command failed \(128\): git rev-parse --verify nope\n"
-    ):
+    with pytest.raises(ReleaseError, match=r"^git rev-parse --verify nope failed \(128\): "):
         git_command(repository, ("rev-parse", "--verify", "nope"), git_environment)
 
 
@@ -447,8 +419,8 @@ def test_signed_history_ignores_signature_display(
     commit(repository, git_environment, "fix: ordinary")
     state = inspect_repository(repository, config, git_environment)
     assert state.messages == ("fix: ordinary", "feat!: breaking")
-    proposal = make_proposal(config, state, None, None, False)
-    assert proposal.version == "2.0.0"
+    proposal = make_proposal(config, state)
+    assert proposal.version == (2, 0, 0)
     assert (proposal.counts.features, proposal.counts.fixes, proposal.counts.breaking) == (1, 1, 1)
 
 
@@ -476,7 +448,7 @@ def test_historical_tags_are_peeled_in_one_batch(
         calls.append(argv[0])
         return git_command(root, argv, environment, capture=capture, input_data=input_data)
 
-    monkeypatch.setattr("curtaincall.git.git_command", record)
+    monkeypatch.setattr("curtaincall.inspection.git_command", record)
     tags = _local_tags(repository, config, git_environment)
     assert len(tags) == 32
     assert {tag.commit_id for tag in tags} == {head}
@@ -498,22 +470,24 @@ def test_tag_batch_rejects_unavailable_commit(
         _local_tags(repository, config, git_environment)
 
 
-@pytest.mark.parametrize("output", ["", "bad commit\n", "a" * 40 + " tree\n"])
-def test_tag_batch_rejects_invalid_response(
-    repository: Path,
-    git_environment: dict[str, str],
-    config: ReleaseConfig,
-    monkeypatch: pytest.MonkeyPatch,
-    output: str,
-) -> None:
-    git(repository, git_environment, "tag", "v0.1.0")
+@pytest.mark.parametrize(
+    "output, reason",
+    [
+        ("", "incomplete cat-file batch response"),
+        ("bad commit\n", "available commit"),
+        ("a" * 40 + " tree\n", "available commit"),
+    ],
+)
+def test_tag_batch_rejects_invalid_response(output: str, reason: str) -> None:
+    with pytest.raises(ReleaseError, match=reason):
+        tag_states([("v0.1.0", "b" * 40, (0, 1, 0))], output)
 
-    def batch(root: Path, argv: Command, environment: Mapping[str, str], **_kwargs: object) -> str:
-        return output if argv[0] == "cat-file" else git_command(root, argv, environment)
 
-    monkeypatch.setattr("curtaincall.git.git_command", batch)
-    with pytest.raises(ReleaseError, match=r"incomplete cat-file|available commit"):
-        _local_tags(repository, config, git_environment)
+def test_tag_batch_builds_tag_states() -> None:
+    commit_id = "a" * 40
+    assert tag_states([("v0.1.0", "b" * 40, (0, 1, 0))], f"{commit_id} commit\n")[0].commit_id == (
+        commit_id
+    )
 
 
 def test_scoped_history_and_unscoped_ahead(
@@ -522,7 +496,7 @@ def test_scoped_history_and_unscoped_ahead(
     tag(repository, git_environment)
     commit(repository, git_environment, "feat: scoped", "src/path with spaces.txt")
     commit(repository, git_environment, "fix: elsewhere", "other.txt")
-    state = inspect_repository(repository, replace(config, paths=("src",)), git_environment)
+    state = inspect_repository(repository, replace(config, history_paths=("src",)), git_environment)
     assert state.messages == ("feat: scoped",)
     assert state.ahead == 2
 
@@ -534,7 +508,7 @@ def test_no_relevant_history_rejected(
     if released:
         tag(repository, git_environment)
     with pytest.raises(ReleaseError, match="no relevant commits"):
-        inspect_repository(repository, replace(config, paths=("missing",)), git_environment)
+        inspect_repository(repository, replace(config, history_paths=("missing",)), git_environment)
 
 
 def test_no_commits_since_release_rejected(
@@ -624,7 +598,7 @@ def test_root_with_newlines_preserved(repository: Path, git_environment: dict[st
 
 
 def test_not_a_repository(tmp_path: Path, git_environment: dict[str, str]) -> None:
-    with pytest.raises(ReleaseError, match="Command failed"):
+    with pytest.raises(ReleaseError, match=r"git rev-parse --show-toplevel failed \(128\)"):
         resolve_location(tmp_path, None, git_environment)
 
 
@@ -712,7 +686,8 @@ def test_branch_name_matching_unrelated_tag(
     repository: Path, git_environment: dict[str, str], config: ReleaseConfig
 ) -> None:
     git(repository, git_environment, "tag", "main")
-    assert inspect_repository(repository, config, git_environment).branch == "main"
+    head = git(repository, git_environment, "rev-parse", "HEAD")
+    assert inspect_repository(repository, config, git_environment).snapshot.head == head
 
 
 def test_push_url_rewriting_cannot_redirect_origin(
@@ -730,7 +705,7 @@ def test_inspection_rejects_escaping_configured_symlink(
 ) -> None:
     (repository / "escape").symlink_to(repository.parent, target_is_directory=True)
     with pytest.raises(ReleaseError, match="outside the worktree"):
-        inspect_repository(repository, replace(config, paths=("escape",)), git_environment)
+        inspect_repository(repository, replace(config, history_paths=("escape",)), git_environment)
 
 
 def test_changed_paths_ignore_replacement_tree(
@@ -742,23 +717,6 @@ def test_changed_paths_ignore_replacement_tree(
     git(repository, git_environment, "replace", head, changed)
     assert git(repository, git_environment, "diff", "--cached", "--name-only") == "tracked.txt"
     assert changed_paths(repository, git_environment) == frozenset()
-
-
-def test_run_process_returns_failure_without_raising(tmp_path: Path) -> None:
-    script = "import os, sys; os.write(1, b'out\\xff'); os.write(2, b'err'); sys.exit(3)"
-    result = run_process(tmp_path, (sys.executable, "-c", script), os.environ)
-    assert result == ProcessResult(3, os.fsdecode(b"out\xff"), "err")
-
-
-def test_run_process_passes_input(tmp_path: Path) -> None:
-    script = "import sys; sys.stdout.write(sys.stdin.read().upper())"
-    result = run_process(tmp_path, (sys.executable, "-c", script), os.environ, input_data=b"abc")
-    assert result == ProcessResult(0, "ABC", "")
-
-
-def test_run_process_reports_unrunnable_command(tmp_path: Path) -> None:
-    with pytest.raises(ReleaseError, match="Cannot run /no/such/executable"):
-        run_process(tmp_path, ("/no/such/executable",), os.environ)
 
 
 def test_git_process_reports_exit_code(repository: Path, git_environment: dict[str, str]) -> None:
@@ -809,18 +767,3 @@ def test_matches_repository_rejects_other_destinations(origin: str) -> None:
 )
 def test_matches_repository_is_literal(origin: str, repository: str, expected: bool) -> None:
     assert matches_repository(origin, repository) is expected
-
-
-@pytest.mark.parametrize(
-    ("result", "expected"),
-    [
-        (ProcessResult(1, "out\n", "err\n"), "gh release upload failed (1): err"),
-        (
-            ProcessResult(2, "https://user:token@host/x\n", ""),
-            "gh release upload failed (2): https://[redacted]@host/x",
-        ),
-        (ProcessResult(3, "", ""), "gh release upload failed (3)"),
-    ],
-)
-def test_process_failure_prefers_stderr_then_stdout(result: ProcessResult, expected: str) -> None:
-    assert process_failure("gh release upload", result) == expected

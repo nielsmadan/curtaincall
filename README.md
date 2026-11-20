@@ -26,7 +26,7 @@ In the repository you want to release, add `scripts/release.json`:
 {
   "name": "Example",
   "initial_version": "0.1.0",
-  "checks": [["just", "check"]]
+  "preflight": [["just", "check"]]
 }
 ```
 
