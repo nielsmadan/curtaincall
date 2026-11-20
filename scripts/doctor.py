@@ -4,9 +4,12 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+Which = Callable[[str, str], "str | None"]
+Run = Callable[[Sequence[str]], "str | None"]
 
 
 @dataclass(frozen=True)
@@ -35,12 +38,8 @@ def git_version_ready(value: str | None) -> bool:
     return match is not None and tuple(map(int, match.groups())) >= (2, 45)
 
 
-def hook_check(root: Path, environment: Mapping[str, str], git: str | None, name: str) -> Check:
-    hook_path = (
-        command(root, environment, (git, "rev-parse", "--git-path", f"hooks/{name}"))
-        if git
-        else None
-    )
+def hook_check(root: Path, run: Run, git: str | None, name: str) -> Check:
+    hook_path = run((git, "rev-parse", "--git-path", f"hooks/{name}")) if git else None
     return Check(
         name,
         hook_path is not None and executable(root / hook_path),
@@ -48,7 +47,9 @@ def hook_check(root: Path, environment: Mapping[str, str], git: str | None, name
     )
 
 
-def inspect(root: Path, environment: Mapping[str, str]) -> tuple[Check, ...]:
+def inspect(
+    root: Path, environment: Mapping[str, str], *, which: Which, run: Run
+) -> tuple[Check, ...]:
     tools = (
         ("git", "install Git >=2.45: https://git-scm.com/downloads"),
         ("uv", "install: https://docs.astral.sh/uv/getting-started/installation/"),
@@ -58,27 +59,23 @@ def inspect(root: Path, environment: Mapping[str, str]) -> tuple[Check, ...]:
     search_path = os.pathsep.join(
         str(root / part) for part in environment.get("PATH", os.defpath).split(os.pathsep)
     )
-    available = {name: shutil.which(name, path=search_path) for name, _hint in tools}
+    available = {name: which(name, search_path) for name, _hint in tools}
     checks = tuple(Check(name, available[name] is not None, hint) for name, hint in tools)
     checks += (
         Check(
             "Git >=2.45",
-            git_version_ready(command(root, environment, (available["git"], "--version")))
-            if available["git"]
-            else False,
+            git_version_ready(run((available["git"], "--version"))) if available["git"] else False,
             "upgrade Git: read-only inspection requires --no-lazy-fetch (Git >=2.45)",
         ),
         Check(
             ".venv",
             executable(root / ".venv/bin/python")
-            and command(
-                root,
-                environment,
+            and run(
                 (
                     str(root / ".venv/bin/python"),
                     "-c",
                     "import sys; raise SystemExit(sys.version_info < (3, 13))",
-                ),
+                )
             )
             is not None,
             "run: uv sync --locked --all-groups (Python >=3.13)",
@@ -93,17 +90,23 @@ def inspect(root: Path, environment: Mapping[str, str]) -> tuple[Check, ...]:
             "Lefthook configuration",
             (root / "lefthook.yml").is_file()
             and available["lefthook"] is not None
-            and command(root, environment, (available["lefthook"], "validate")) is not None,
+            and run((available["lefthook"], "validate")) is not None,
             "check lefthook.yml with: lefthook validate",
         ),
     )
     return checks + tuple(
-        hook_check(root, environment, available["git"], name) for name in ("pre-commit", "pre-push")
+        hook_check(root, run, available["git"], name) for name in ("pre-commit", "pre-push")
     )
 
 
 def main() -> int:
-    checks = inspect(Path(__file__).resolve().parent.parent, os.environ)
+    root = Path(__file__).resolve().parent.parent
+    checks = inspect(
+        root,
+        os.environ,
+        which=lambda name, path: shutil.which(name, path=path),
+        run=lambda argv: command(root, os.environ, argv),
+    )
     for check in checks:
         print(
             f"  ok       {check.name}" if check.ready else f"  MISSING  {check.name}: {check.hint}"

@@ -1,15 +1,33 @@
 import os
 import shutil
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 from scripts import doctor
 
 
+def available(name: str, _path: str) -> str | None:
+    return f"/tools/{name}"
+
+
+def healthy(argv: Sequence[str]) -> str | None:
+    if argv[-1] == "--version":
+        return "git version 2.45.0"
+    if "rev-parse" in argv:
+        return f".git/{argv[-1]}"
+    return ""
+
+
+def inspect(
+    root: Path, *, which: doctor.Which = available, run: doctor.Run = healthy
+) -> tuple[doctor.Check, ...]:
+    return doctor.inspect(root, {}, which=which, run=run)
+
+
 @pytest.fixture
-def healthy_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def healthy_checkout(tmp_path: Path) -> Path:
     for name in ("python", "pytest", "ruff", "pylint", "mypy"):
         path = tmp_path / ".venv/bin" / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -21,21 +39,11 @@ def healthy_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         path.write_text("#!/bin/sh\nexit 0\n")
         path.chmod(0o755)
     (tmp_path / "lefthook.yml").write_text("pre-commit: {}\npre-push: {}\n")
-    monkeypatch.setattr(shutil, "which", lambda name, path: f"/tools/{name}")
-
-    def command(_root: Path, _environment: Mapping[str, str], argv: Sequence[str]) -> str:
-        if argv[-1] == "--version":
-            return "git version 2.45.0"
-        if "rev-parse" in argv:
-            return f".git/{argv[-1]}"
-        return ""
-
-    monkeypatch.setattr(doctor, "command", command)
     return tmp_path
 
 
 def test_healthy_checkout(healthy_checkout: Path) -> None:
-    checks = doctor.inspect(healthy_checkout, {})
+    checks = inspect(healthy_checkout)
     assert all(check.ready for check in checks)
     assert {check.name for check in checks} == {
         "git",
@@ -66,38 +74,31 @@ def test_healthy_checkout(healthy_checkout: Path) -> None:
 )
 def test_missing_checkout_wiring(healthy_checkout: Path, path: str, name: str) -> None:
     (healthy_checkout / path).unlink()
-    check = next(check for check in doctor.inspect(healthy_checkout, {}) if check.name == name)
+    check = next(check for check in inspect(healthy_checkout) if check.name == name)
     assert check.ready is False
     assert check.hint
 
 
 def test_hook_must_be_executable(healthy_checkout: Path) -> None:
     (healthy_checkout / ".git/hooks/pre-push").chmod(0o644)
-    check = next(
-        check for check in doctor.inspect(healthy_checkout, {}) if check.name == "pre-push"
-    )
+    check = next(check for check in inspect(healthy_checkout) if check.name == "pre-push")
     assert check.ready is False
 
 
-def test_custom_absolute_hooks_path(
-    healthy_checkout: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = doctor.command
+def test_custom_absolute_hooks_path(healthy_checkout: Path) -> None:
+    def absolute(argv: Sequence[str]) -> str | None:
+        value = healthy(argv)
+        return str(healthy_checkout / value) if value and "rev-parse" in argv else value
 
-    def command(root: Path, environment: Mapping[str, str], argv: Sequence[str]) -> str | None:
-        value = original(root, environment, argv)
-        return str(root / value) if value and "rev-parse" in argv else value
-
-    monkeypatch.setattr(doctor, "command", command)
-    assert all(check.ready for check in doctor.inspect(healthy_checkout, {}))
+    assert all(check.ready for check in inspect(healthy_checkout, run=absolute))
 
 
 @pytest.mark.parametrize("tool", ["git", "uv", "just", "lefthook"])
-def test_missing_tools(healthy_checkout: Path, monkeypatch: pytest.MonkeyPatch, tool: str) -> None:
-    monkeypatch.setattr(
-        shutil, "which", lambda name, path: None if name == tool else f"/tools/{name}"
+def test_missing_tools(healthy_checkout: Path, tool: str) -> None:
+    checks = inspect(
+        healthy_checkout, which=lambda name, path: None if name == tool else available(name, path)
     )
-    check = next(check for check in doctor.inspect(healthy_checkout, {}) if check.name == tool)
+    check = next(check for check in checks if check.name == tool)
     assert check.ready is False
     assert "install" in check.hint
 
@@ -126,18 +127,11 @@ def test_git_version(value: str | None, ready: bool) -> None:
         ("hooks/pre-push", "pre-push"),
     ],
 )
-def test_failed_tool_check(
-    healthy_checkout: Path, monkeypatch: pytest.MonkeyPatch, argument: str, name: str
-) -> None:
-    original = doctor.command
-    monkeypatch.setattr(
-        doctor,
-        "command",
-        lambda root, environment, argv: (
-            None if argv[-1] == argument else original(root, environment, argv)
-        ),
+def test_failed_tool_check(healthy_checkout: Path, argument: str, name: str) -> None:
+    checks = inspect(
+        healthy_checkout, run=lambda argv: None if argv[-1] == argument else healthy(argv)
     )
-    check = next(check for check in doctor.inspect(healthy_checkout, {}) if check.name == name)
+    check = next(check for check in checks if check.name == name)
     assert check.ready is False
 
 
@@ -164,12 +158,16 @@ def test_tools_resolve_relative_path_from_checkout(
     monkeypatch.chdir(tmp_path)
     commands = []
 
-    def command(_root: Path, _environment: Mapping[str, str], argv: Sequence[str]) -> str:
+    def run(argv: Sequence[str]) -> str:
         commands.append(argv[0])
         return "git version 2.45.0" if argv[-1] == "--version" else ""
 
-    monkeypatch.setattr(doctor, "command", command)
-    checks = doctor.inspect(root, {"PATH": component})
+    checks = doctor.inspect(
+        root,
+        {"PATH": component},
+        which=lambda name, path: shutil.which(name, path=path),
+        run=run,
+    )
     assert all(check.ready for check in checks if check.name in {"git", "uv", "just", "lefthook"})
     assert commands == [
         str(directory / "git"),
@@ -188,7 +186,7 @@ def test_main_reports_exit_status(
     monkeypatch.setattr(
         doctor,
         "inspect",
-        lambda root, environment: (doctor.Check("hooks", ready, "run: just setup"),),
+        lambda root, environment, which, run: (doctor.Check("hooks", ready, "run: just setup"),),
     )
     assert doctor.main() == (0 if ready else 1)
     assert expected in capsys.readouterr().out
