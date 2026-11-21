@@ -1,46 +1,111 @@
 # Curtaincall
 
-`curtains` prepares local releases from a repository-owned JSON policy, creates an annotated tag, and atomically pushes the prepared branch and tag. Python 3.13+; macOS and Linux; no runtime dependencies.
+`curtains` is a small command-line tool for cutting releases from your own machine. It reads a release policy checked into the repository and, based on your commit history, proposes the next version. It then runs your checks and preparation steps, commits the result and pushes the release commit together with an annotated tag in one atomic push. A companion GitHub Action takes over once the tag lands: it validates the tag and publishes the GitHub release.
+
+It's an internal tool. I built it to replace the one-off release scripts I had in each of my projects, and those projects are its main users. The code is public and MIT-licensed, so anyone can use it.
+
+## What it does
+
+- **Proposes the version.** It reads [Conventional Commits](https://www.conventionalcommits.org/) since the last release tag. `feat` bumps minor, `fix` and `perf` bump patch, and breaking changes bump major. You can override with `patch`, `minor`, `major` or an exact version.
+- **Runs your release steps in order.** Preflight checks run first. Then come preparation stages: version bumps, lockfile updates, changelog generation, anything a command can do. Each stage declares which files it may change and becomes its own commit.
+- **Fails closed.** It refuses to start without a clean worktree on the release branch, or when local and remote release tags disagree. `--dry-run` is strictly read-only, and nothing reaches the remote unless every step succeeds.
+- **Publishes atomically.** It pushes the branch and the annotated (optionally signed) tag together, or not at all.
+- **Hands off to CI.** `curtains ci` validates the pushed tag, finds the previous tag for release notes, and creates or completes the GitHub release with assets. Re-running a failed workflow is safe.
+
+## Who it's for
+
+Curtaincall may suit you if:
+
+- you maintain several small projects and want one consistent release flow, without copying a release script into each of them;
+- your releases are made locally by a person, and a tag-triggered workflow does the publishing;
+- you already write Conventional Commits, or are happy to start;
+- your projects mix languages and toolchains (Python, Swift, Rust, Node…). The policy only runs commands, so the tool doesn't care what they build.
+
+Look elsewhere if you want fully automated releases on every merge (semantic-release, release-please), registry publishing built in, prerelease versions, or Windows support.
+
+## Quick start
 
 Install with [Homebrew](https://brew.sh/):
 
 ```sh
 brew install nielsmadan/tap/curtaincall
-curtains --help
-curtains --version
 ```
 
-Upgrade with `brew upgrade curtaincall`. The formula brings its own Python 3.13 and Git, since curtains needs Git 2.45+ and macOS ships an older one.
-
-Without Homebrew, install a release wheel from [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases) with [uv](https://docs.astral.sh/uv/), substituting the latest version: `uv tool install https://github.com/nielsmadan/curtaincall/releases/download/v1.0.0/curtaincall-1.0.0-py3-none-any.whl`. To upgrade, rerun `uv tool install --reinstall <new wheel URL>`; `uv tool upgrade` does not move a URL install. Ensure uv's tool executable directory is already on your PATH. Curtaincall is not published to PyPI.
-
-To install from this checkout, use [Just](https://just.systems/): `just install` installs a snapshot; rerun it after source changes, including changes at the same version. `just install-editable` tracks source edits immediately. `just uninstall` removes the tool.
-
-Curtaincall uses its own `just release` command. Its tag-triggered workflow publishes tested wheels and source archives to [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases) and updates the Homebrew formula. See [self-release and recovery](docs/release.md#releasing-curtaincall-itself) for the first release and workflow retries.
-
-For development, install [Lefthook](https://lefthook.dev/installation/) and run `just setup` after cloning. It installs locked development dependencies and Git hooks, then checks the checkout with `just doctor`. See [development](docs/development.md) for the validation commands.
-
-In the repository you want to release, add `scripts/release.json`:
+Add `scripts/release.json` to the repository you want to release:
 
 ```json
 {
   "name": "Example",
   "initial_version": "0.1.0",
-  "preflight": [["just", "check"]]
+  "preflight": [["just", "check"]],
+  "stages": [
+    {
+      "files": ["pyproject.toml", "CHANGELOG.md"],
+      "commands": [
+        ["{python}", "scripts/set_version.py", "{version}"],
+        ["git-cliff", "--tag", "{tag}", "-o", "CHANGELOG.md"]
+      ],
+      "message": "chore: release {version}"
+    }
+  ]
 }
 ```
 
+Then, from the release branch:
+
 ```sh
-curtains --dry-run
-curtains                 # review and confirm interactively
-curtains minor           # choose a bump
-curtains 1.2.3 --yes      # explicit unattended confirmation
+curtains --dry-run       # inspect the proposal; runs nothing
+curtains                 # run checks, review, confirm, release
+curtains minor           # force a bump
+curtains 1.2.3 --yes     # explicit version, no prompt
 ```
 
-Use Git 2.45+ and an origin server supporting atomic pushes. Start on the configured branch (default `main`) with a clean, complete worktree and matching local/remote release tags. Inspection contacts origin but never fetches missing objects. Dry-run executes no policy commands, including custom suggestions; its built-in estimate is labelled when a suggestion is skipped.
+A policy with no `stages` just tags the current commit. [Configuration](docs/configuration.md) covers every field, and the [policy examples](docs/migration.md#standalone-policy-fixtures) show real policies for Python, Swift, Rust and multi-package repositories.
 
-Policies can prepare manifests and changelogs in sequential stages. Commands and Git hooks are trusted code; file allowlists detect mistakes and are not a sandbox. Cancellation and failures preserve any artifacts already created. A failed push can have an unknown remote outcome: inspect refs before further action.
+## In GitHub Actions
 
-In GitHub Actions, the `nielsmadan/curtaincall` action puts `curtains` on `PATH` for `curtains ci validate-tag`, `previous-tag` and `publish`; the action pin is the `curtains` version it installs; see [CI commands](docs/release.md#ci-commands) and [replacing a CI release helper](docs/migration.md#replacing-a-ci-release-helper).
+The action installs `curtains` at the version of the tag you pin. A tag-triggered workflow can then use it like this:
 
-Read [configuration](docs/configuration.md) for the schema, [release behavior](docs/release.md) for prerequisites and recovery, and [migration](docs/migration.md) for the ten standalone policy examples. Contributors: [development](docs/development.md), [architecture](docs/architecture.md), and the [docs index](docs/overview.md).
+```yaml
+- uses: actions/checkout@<sha>
+  with:
+    fetch-depth: 0
+- uses: nielsmadan/curtaincall@<full SHA of a release tag> # vX.Y.Z
+- run: curtains ci validate-tag "$GITHUB_REF_NAME" "$GITHUB_SHA"
+- run: curtains ci publish "$GITHUB_REF_NAME" "$GITHUB_SHA" --notes notes.md dist/*
+  env:
+    GH_TOKEN: ${{ github.token }}
+```
+
+`publish` needs `"repository": "owner/name"` in the policy and `contents: write` on the job. The full workflow is in [replacing a CI release helper](docs/migration.md#replacing-a-ci-release-helper), and command details are in [CI commands](docs/release.md#ci-commands).
+
+## Requirements
+
+- macOS or Linux, Python 3.13+ and Git 2.45+. The Homebrew formula brings its own Python and Git.
+- An origin that supports atomic pushes (GitHub does).
+- No runtime dependencies beyond the standard library.
+
+## Other installs
+
+Curtaincall is not on PyPI. Without Homebrew, install a wheel from [GitHub Releases](https://github.com/nielsmadan/curtaincall/releases) with [uv](https://docs.astral.sh/uv/), replacing `X.Y.Z` with the latest version:
+
+```sh
+uv tool install https://github.com/nielsmadan/curtaincall/releases/download/vX.Y.Z/curtaincall-X.Y.Z-py3-none-any.whl
+```
+
+To upgrade, rerun the same command with `--reinstall` and the new URL; `uv tool upgrade` does not move a URL install.
+
+From a checkout, `just install` installs a snapshot, `just install-editable` tracks source edits and `just uninstall` removes it.
+
+## Documentation
+
+- [Configuration](docs/configuration.md): the policy schema and version selection.
+- [Releases and recovery](docs/release.md): prerequisites, prompts, exit codes, failure handling and CI commands.
+- [Migration](docs/migration.md): replacing an existing release wrapper or CI helper, plus example policies.
+- [Development](docs/development.md) and [architecture](docs/architecture.md): working on Curtaincall itself. Run `just setup` after cloning (it needs [Lefthook](https://lefthook.dev/installation/)).
+
+Curtaincall releases itself with `just release`; see [self-release and recovery](docs/release.md#releasing-curtaincall-itself).
+
+## License
+
+[MIT](LICENSE)
