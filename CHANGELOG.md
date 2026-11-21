@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.1
+
+### Fixes
+
+- Sort test imports with tests as a first-party package (#7)
+
 ## v2.0.0
 
 ### Features
