@@ -8,10 +8,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
-from tests import helpers
-from tests.helpers import executable, git
 
 from curtaincall import ci
+from tests import helpers
+from tests.helpers import executable, git
 
 pytestmark = pytest.mark.integration
 
