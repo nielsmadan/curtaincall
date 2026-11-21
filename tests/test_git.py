@@ -290,10 +290,13 @@ def test_partial_clone_inspection_does_not_fetch_missing_remote_objects(
     remote = repository.parent / "remote.git"
     partial = repository.parent / "partial"
     git(remote, git_environment, "config", "uploadpack.allowFilter", "true")
+    # Lazy fetches (clone checkout, cat-file) start detached auto-maintenance, which races the snapshots.
     git(
         repository,
         git_environment,
         "clone",
+        "--config",
+        "maintenance.auto=false",
         "--filter=blob:none",
         remote.as_uri(),
         str(partial),
