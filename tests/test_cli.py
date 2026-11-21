@@ -7,13 +7,13 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pytest
-from tests.helpers import write_policy
 
 from curtaincall.cli import main
 from curtaincall.errors import ReleaseCancelled, ReleaseError
 from curtaincall.git import git_command
 from curtaincall.models import Command
 from curtaincall.process import run_command
+from tests.helpers import write_policy
 
 pytestmark = pytest.mark.integration
 

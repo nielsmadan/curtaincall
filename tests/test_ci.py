@@ -4,13 +4,13 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from tests import helpers
-from tests.helpers import commit, git, write_policy
 
 from curtaincall import ci
 from curtaincall.ci import release_commit
 from curtaincall.errors import ReleaseError
 from curtaincall.models import ReleaseConfig
+from tests import helpers
+from tests.helpers import commit, git, write_policy
 
 pytestmark = pytest.mark.integration
 
