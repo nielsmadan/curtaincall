@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.1.0
+
+### Features
+
+- Add pins command for other repositories' release assets
+
+
+### Maintenance
+
+- Update docs
+
 ## v2.0.1
 
 ### Fixes
