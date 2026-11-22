@@ -79,6 +79,19 @@ The action installs `curtains` at the version of the tag you pin. A tag-triggere
 
 `publish` needs `"repository": "owner/name"` in the policy and `contents: write` on the job. The full workflow is in [replacing a CI release helper](docs/migration.md#replacing-a-ci-release-helper), and command details are in [CI commands](docs/release.md#ci-commands).
 
+## Pinning other projects' releases
+
+A project that ships another project's release assets can pin them in `scripts/pins.json`:
+
+```sh
+curtains pins add hooklinesinker nielsmadan/hooklinesinker hooklinesinker-macos-universal
+curtains pins check                        # which pins are behind their latest release?
+curtains pins update hooklinesinker        # new digests, rewritten references, follow-up commands
+curtains pins fetch hooklinesinker --output build/vendor
+```
+
+Each pin records the release version, its tag commit and every asset's sha256, so `fetch` verifies downloaded bytes against the committed digest. See [pins](docs/pins.md).
+
 ## Requirements
 
 - macOS or Linux, Python 3.13+ and Git 2.45+. The Homebrew formula brings its own Python and Git.
@@ -102,6 +115,7 @@ From a checkout, `just install` installs a snapshot, `just install-editable` tra
 - [Configuration](docs/configuration.md): the policy schema and version selection.
 - [Releases and recovery](docs/release.md): prerequisites, prompts, exit codes, failure handling and CI commands.
 - [Migration](docs/migration.md): replacing an existing release wrapper or CI helper, plus example policies.
+- [Pins](docs/pins.md): pinning, updating and fetching other repositories' release assets.
 - [Development](docs/development.md) and [architecture](docs/architecture.md): working on Curtaincall itself. Run `just setup` after cloning (it needs [Lefthook](https://lefthook.dev/installation/)).
 
 Curtaincall releases itself with `just release`; see [self-release and recovery](docs/release.md#releasing-curtaincall-itself).

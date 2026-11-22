@@ -85,3 +85,27 @@ class ReleaseRequest:
     version: str | None
     dry_run: bool
     yes: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PinAsset:
+    name: str
+    digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class PinReference:
+    file: str
+    pattern: str
+
+
+@dataclass(frozen=True, slots=True)
+class Pin:
+    name: str
+    repository: str
+    tag_prefix: str
+    version: Version
+    commit: str
+    assets: tuple[PinAsset, ...]
+    references: tuple[PinReference, ...]
+    after_update: tuple[Command, ...]

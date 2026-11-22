@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from curtaincall.config import ASSET_NAME
 from curtaincall.errors import ReleaseError
 from curtaincall.git import (
     OBJECT_ID,
@@ -20,7 +21,6 @@ from curtaincall.models import ReleaseConfig
 from curtaincall.process import ProcessResult, process_failure, run_process
 from curtaincall.versions import require_release_tag, version_text
 
-_ASSET_NAME: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_+-]|\.(?=[A-Za-z0-9_+-]))*")
 _GH_PATH_SYNTAX: Final = re.compile(r"[#*?\[]")
 _RELEASE_FIELDS: Final = "tagName,name,body,isDraft,isImmutable,isPrerelease,assets"
 _CHUNK_SIZE: Final = 1 << 20
@@ -79,7 +79,7 @@ class _Plan:
 
 
 def _read_asset(path: Path) -> Asset:
-    if _ASSET_NAME.fullmatch(path.name) is None:
+    if ASSET_NAME.fullmatch(path.name) is None:
         raise ReleaseError(f"Invalid release asset name: {path.name!r}")
     if _GH_PATH_SYNTAX.search(str(path)) is not None:
         raise ReleaseError(f"Release asset path must not contain '#', '*', '?' or '[': {path}")

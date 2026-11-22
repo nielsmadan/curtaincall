@@ -34,7 +34,7 @@ def _asset(path: Path) -> dict[str, object]:
     }
 
 
-def _interaction_error() -> str | None:
+def interaction_error() -> str | None:
     if (
         os.environ.get("GH_PROMPT_DISABLED") != "1"
         or os.environ.get("GH_NO_UPDATE_NOTIFIER") != "1"
@@ -165,7 +165,7 @@ def main(argv: list[str]) -> int:
     if "--repo" not in values:
         print("fake gh: --repo is required", file=sys.stderr)
         return 2
-    interaction = _interaction_error()
+    interaction = interaction_error()
     if interaction is not None:
         print(interaction, file=sys.stderr)
         return 2

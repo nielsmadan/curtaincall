@@ -17,6 +17,7 @@ _VERSION_PATTERNS: Final = {
     parts: re.compile(r"(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){" + str(parts - 1) + "}")
     for parts in (2, 3)
 }
+_ANY_VERSION: Final = re.compile(r"(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))*")
 _HEADER: Final = re.compile(r"(\w+)(?:\([^\n]*\))?(!)?:.*")
 _BREAKING_FOOTER: Final = re.compile(r"^BREAKING[ -]CHANGE:", re.MULTILINE)
 BUMP_KINDS: Final = frozenset(get_args(BumpKind.__value__))
@@ -31,6 +32,15 @@ def format_version(version: Version) -> str:
 def parse_version(value: str, parts: VersionParts) -> Version:
     if not _VERSION_PATTERNS[parts].fullmatch(value):
         raise ReleaseError(f"Expected a canonical {parts}-part version, got {value!r}.")
+    try:
+        return tuple(int(part) for part in value.split("."))
+    except ValueError as error:
+        raise ReleaseError(f"Version component is too large: {value!r}.") from error
+
+
+def parse_any_version(value: str) -> Version:
+    if not _ANY_VERSION.fullmatch(value):
+        raise ReleaseError(f"Expected a canonical numeric version, got {value!r}.")
     try:
         return tuple(int(part) for part in value.split("."))
     except ValueError as error:

@@ -114,22 +114,25 @@ def remote_tag_lines(root: Path, tag: str, environment: Mapping[str, str]) -> li
 
 
 def resolve_location(
-    directory: Path, config_path: Path | None, environment: Mapping[str, str]
+    directory: Path,
+    config_path: Path | None,
+    environment: Mapping[str, str],
+    *,
+    default: str = "scripts/release.json",
+    label: str = "release policy",
 ) -> Location:
     try:
         start = directory.resolve()
         root = Path(
             git_command(start, ("rev-parse", "--show-toplevel"), environment).removesuffix("\n")
         ).resolve()
-        selected = (
-            start / config_path if config_path is not None else root / "scripts/release.json"
-        ).resolve()
+        selected = (start / config_path if config_path is not None else root / default).resolve()
     except (OSError, RuntimeError) as error:
         raise ReleaseError(f"Cannot resolve release location: {error}") from error
     if not selected.is_relative_to(root) or any(
         part.casefold() == ".git" for part in selected.relative_to(root).parts
     ):
-        raise ReleaseError("The release policy must be inside the selected worktree.")
+        raise ReleaseError(f"The {label} must be inside the selected worktree.")
     return Location(root, selected)
 
 

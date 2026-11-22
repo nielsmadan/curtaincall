@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from importlib.metadata import version
 from typing import Final
 
-from curtaincall import ci
+from curtaincall import ci, pins
 from curtaincall.arguments import add_location_arguments
 from curtaincall.config import load_config
 from curtaincall.errors import NothingToRelease, ReleaseCancelled, ReleaseError
@@ -40,14 +40,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     ci_arguments = _ci_arguments(arguments)
     if ci_arguments is not None:
         return ci.main(ci_arguments)
+    if arguments[:1] == ["pins"]:
+        return pins.main(arguments[1:])
     parser = argparse.ArgumentParser(
         prog="curtains",
         usage=(
             "%(prog)s [options] [patch|minor|major|VERSION]\n"
-            "       %(prog)s [--config CONFIG] [--directory DIRECTORY] ci COMMAND ..."
+            "       %(prog)s [--config CONFIG] [--directory DIRECTORY] ci COMMAND ...\n"
+            "       %(prog)s pins COMMAND ..."
         ),
         description="Prepare, tag and push a Git release.",
-        epilog="CI commands: run 'curtains ci --help'.",
+        epilog="CI commands: run 'curtains ci --help'. Pins: run 'curtains pins --help'.",
     )
     parser.add_argument("version", nargs="?", metavar="patch|minor|major|VERSION")
     add_location_arguments(parser)
