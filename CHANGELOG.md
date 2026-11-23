@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.2.0
+
+### Features
+
+- Update policy pins during releases
+
+
+### Maintenance
+
+- Bump the non-breaking group with 2 updates (#8)
+
 ## v2.1.0
 
 ### Features
