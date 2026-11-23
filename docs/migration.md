@@ -24,10 +24,10 @@ From inside `python`, use `--config scripts/release.json`; all configured files 
 A consumer's tag-triggered workflow often carries a helper script that validates the tag, finds the previous tag and publishes the GitHub release. `curtains ci` replaces those commands (see [CI commands](release.md#ci-commands)); manifest checks and registry publishing stay in the consumer. Check out with `fetch-depth: 0`, add the action after the checkout, and give the publish job `contents: write`:
 
 ```yaml
-- uses: actions/checkout@<sha>
+- uses: actions/checkout@v7.0.1
   with:
     fetch-depth: 0
-- uses: nielsmadan/curtaincall@<full SHA of a release tag> # vX.Y.Z
+- uses: nielsmadan/curtaincall@v2.2.0
 - env:
     RELEASE_TAG: ${{ github.ref_name }}
   run: curtains ci validate-tag "$RELEASE_TAG" "$GITHUB_SHA"
@@ -35,7 +35,7 @@ A consumer's tag-triggered workflow often carries a helper script that validates
 
 Pass tag names and other workflow values to `run:` through `env:`, never as `${{ }}` expressions inside the script, which Actions substitutes into the shell text before it runs.
 
-Pin the full commit SHA of a release tag with the version in a trailing comment, or the exact release tag when a workflow lockfile from `gh actions-lock` locks it; Dependabot bumps either. The pin is the `curtains` version: the action installs `curtains` from its own checkout and has no version input. It has no outputs either; it puts `curtains` on `PATH` for later steps and leaves the job's `python3` unchanged. The action brings its own Python, so the job needs no `setup-python` for it. The policy must set `repository` for `publish` and for the origin check.
+Pin the exact release tag and lock it to its commit with a workflow lockfile from `gh actions-lock` (`.github/workflows/actions.lock`), or pin the full commit SHA of a release tag with the version in a trailing comment; Dependabot bumps either. The pin is the `curtains` version: the action installs `curtains` from its own checkout and has no version input. It has no outputs either; it puts `curtains` on `PATH` for later steps and leaves the job's `python3` unchanged. The action brings its own Python, so the job needs no `setup-python` for it. The policy must set `repository` for `publish` and for the origin check.
 
 | Fork command | `curtains ci` |
 | --- | --- |

@@ -67,17 +67,17 @@ A policy with no `stages` just tags the current commit. [Configuration](docs/con
 The action installs `curtains` at the version of the tag you pin. A tag-triggered workflow can then use it like this:
 
 ```yaml
-- uses: actions/checkout@<sha>
+- uses: actions/checkout@v7.0.1
   with:
     fetch-depth: 0
-- uses: nielsmadan/curtaincall@<full SHA of a release tag> # vX.Y.Z
+- uses: nielsmadan/curtaincall@v2.2.0
 - run: curtains ci validate-tag "$GITHUB_REF_NAME" "$GITHUB_SHA"
 - run: curtains ci publish "$GITHUB_REF_NAME" "$GITHUB_SHA" --notes notes.md dist/*
   env:
     GH_TOKEN: ${{ github.token }}
 ```
 
-`publish` needs `"repository": "owner/name"` in the policy and `contents: write` on the job. The full workflow is in [replacing a CI release helper](docs/migration.md#replacing-a-ci-release-helper), and command details are in [CI commands](docs/release.md#ci-commands).
+Pin exact release tags and lock them to their commits with [`gh actions-lock`](https://gh.io/actions-lockfile), or pin the full commit SHA of a release tag with the version in a trailing comment. `publish` needs `"repository": "owner/name"` in the policy and `contents: write` on the job. The full workflow is in [replacing a CI release helper](docs/migration.md#replacing-a-ci-release-helper), and command details are in [CI commands](docs/release.md#ci-commands).
 
 ## Pinning other projects' releases
 
