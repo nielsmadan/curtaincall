@@ -29,6 +29,7 @@ Every command needs the `gh` CLI, authenticated for private repositories. Errors
     "references": [
       { "file": "scripts/install-remote.sh", "pattern": "HOOKLINESINKER_VERSION:-v{version}" }
     ],
+    "files": ["Resources/hooklinesinker.sha256"],
     "after_update": [["just", "build"], ["just", "verify-hooklinesinker"]]
   }
 }
@@ -43,6 +44,7 @@ Every command needs the `gh` CLI, authenticated for private repositories. Errors
 | `commit` | Full commit SHA the release tag points to, for source builds and provenance. |
 | `assets` | Asset name to `sha256:<hex>`. Names may contain `{version}`, so an asset like `tool-{version}.whl` follows updates. |
 | `references` | Optional. On update, every occurrence of `pattern` formatted with the old version is replaced by `pattern` formatted with the new one. `pattern` must contain `{version}`, and the file must contain the old value, or the update stops before writing anything. `file` is a literal repository-relative path. |
+| `files` | Optional. Repository-relative paths that `after_update` commands may change, such as a regenerated lockfile. `update` lists them for review, and a release commits them with the pin update. |
 | `after_update` | Optional argv arrays run from the Git root after the files are written, with `{version}` and `{tag}` filled in. If one fails, the updated files are left for review and the command exits 1. |
 
 Unknown keys, duplicate keys and malformed values are rejected. Literal braces in templates are written `{{` and `}}`. Curtains rewrites the whole file on update, two-space indented, in pin order.
@@ -53,4 +55,4 @@ Consumers read the file directly from their build scripts: for example, `json.lo
 
 Digests come from GitHub's own asset `digest` field, which GitHub computes when the asset is uploaded. For an asset without one, `update` and `add` download the asset and hash it. `fetch` always verifies downloaded bytes against the committed digest. So a release asset replaced after pinning is detected when it is fetched, and `update NAME VERSION` to the same version reports it.
 
-To block a release while a pin is behind, add `["curtains", "pins", "check", "--strict"]` to the policy's `preflight`. That makes the release depend on GitHub being reachable; without `--strict`, the check only warns.
+To update a pin as part of every release, name it in the release policy's `pins`; see [pins in a release](release.md#pins-in-a-release). Policy pins must live in `scripts/pins.json`. For a pin you update by hand, `["curtains", "pins", "check", "--strict"]` in `preflight` blocks a release while the pin is behind; don't combine it with policy `pins` for the same pin, because preflight runs before the pin stages and would fail on every pending update. Both make the release depend on GitHub being reachable.

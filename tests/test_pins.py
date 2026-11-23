@@ -11,14 +11,16 @@ from typing import Final
 import pytest
 
 from curtaincall import cli, pins
-from curtaincall.config import dump_pins, parse_pins
+from curtaincall.config import dump_pins, load_config, parse_pins
 from curtaincall.errors import ReleaseError
-from curtaincall.models import Pin, PinAsset, PinReference
-from curtaincall.pins import parse_release, release_version, rewrite_references
-from tests.helpers import executable
+from curtaincall.models import Pin, PinAsset, PinReference, PinUpdate, ReleaseRequest, Stage
+from curtaincall.pins import parse_release, pin_stage, release_version, rewrite_references
+from curtaincall.release import release as run_release
+from tests.helpers import executable, git, tag, write_policy
 
 FAKE_GH = Path(__file__).with_name("fake_gh_releases.py")
 REPOSITORY = "o/tool"
+OTHER_REPOSITORY = "o/other"
 OLD_COMMIT = "a" * 40
 NEW_COMMIT = "b" * 40
 
@@ -35,6 +37,7 @@ BASE: Final = Pin(
     commit=OLD_COMMIT,
     assets=(PinAsset("tool-{version}.tar.gz", digest("tool 1.0.0")),),
     references=(),
+    files=(),
     after_update=(),
 )
 
@@ -44,6 +47,7 @@ def test_pins_round_trip_through_json() -> None:
         BASE,
         tag_prefix="tool-",
         references=(PinReference("install.sh", "TOOL={version}"),),
+        files=("uv.lock",),
         after_update=(("just", "build", "{tag}"),),
     )
     assert parse_pins(dump_pins((original,)), "test") == (original,)
@@ -58,6 +62,7 @@ def test_pins_round_trip_through_json() -> None:
         ({"commit": "main"}, "full lowercase commit SHA"),
         ({"references": [{"file": "a", "pattern": "TOOL"}]}, re.escape("must contain {version}")),
         ({"references": [{"file": "../a", "pattern": "{version}"}]}, "repository-relative"),
+        ({"files": ["../uv.lock"]}, r"tool\.files\[0\]"),
         ({"after_update": [["echo", "{revision}"]]}, "only plain version and tag fields"),
         ({"extra": 1}, "unknown keys: extra"),
     ],
@@ -171,9 +176,9 @@ def pinned(setup: Setup) -> Setup:
     return setup
 
 
-def configure(setup: Setup, **fields: object) -> None:
+def configure(setup: Setup, pin: str = "tool", **fields: object) -> None:
     content = json.loads(setup.pins_file.read_text())
-    content["tool"].update(fields)
+    content[pin].update(fields)
     setup.pins_file.write_text(json.dumps(content))
 
 
@@ -261,6 +266,21 @@ def test_update_rewrites_pin_and_references_then_runs_follow_up(
     assert marker.read_text() == "v1.1.0"
     assert capsys.readouterr().out.splitlines()[-1] == (
         "Review and commit: scripts/pins.json, install.sh"
+    )
+
+
+def test_update_lists_declared_files_for_review(
+    pinned: Setup, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (pinned.root / "install.sh").write_text("TOOL=v1.0.0\n")
+    configure(
+        pinned,
+        references=[{"file": "install.sh", "pattern": "TOOL=v{version}"}],
+        files=["install.sh", "uv.lock"],
+    )
+    assert pinned.run("update", "tool") == 0
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "Review and commit: scripts/pins.json, install.sh, uv.lock"
     )
 
 
@@ -394,3 +414,372 @@ def test_cli_routes_pins(pinned: Setup, capsys: pytest.CaptureFixture[str]) -> N
     capsys.readouterr()
     assert cli.main(["pins", "--directory", str(pinned.root), "check"]) == 0
     assert "1.1.0 is available" in capsys.readouterr().out
+
+
+def test_pin_stage_allows_the_pins_file_references_and_declared_files() -> None:
+    pin = replace(
+        BASE,
+        tag_prefix="tool-{x}-",
+        references=(
+            PinReference("install.sh", "{version}"),
+            PinReference("install.sh", "v{version}"),
+        ),
+        files=("uv.lock",),
+    )
+    assert pin_stage(PinUpdate(pin, (1, 1, 0))) == Stage(
+        files=("scripts/pins.json", "install.sh", "uv.lock"),
+        commands=(
+            (
+                "{python}",
+                "-m",
+                "curtaincall",
+                "pins",
+                "update",
+                "--release-stage",
+                "--",
+                "tool",
+                "tool-{{x}}-1.1.0",
+            ),
+        ),
+        checks=(),
+        message="fix: update tool to 1.1.0",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Project:
+    setup: Setup
+    environment: dict[str, str]
+
+    @property
+    def root(self) -> Path:
+        return self.setup.root
+
+    def git(self, *arguments: str) -> str:
+        return git(self.root, self.environment, *arguments)
+
+    def commit_all(self, message: str) -> None:
+        self.git("add", "--all")
+        self.git("commit", "-m", message)
+
+    def release(self, *, dry_run: bool = False, keep_pins: bool = False) -> None:
+        run_release(
+            self.root,
+            load_config(self.root / "scripts/release.json"),
+            ReleaseRequest(version=None, dry_run=dry_run, yes=True, keep_pins=keep_pins),
+            self.environment,
+            prompt=None,
+        )
+
+    def remote_log(self) -> list[str]:
+        self.git("fetch", "--quiet", "origin")
+        return self.git("log", "--format=%s", "origin/main").splitlines()
+
+    def remote_refs(self) -> str:
+        return self.git("ls-remote", "origin")
+
+
+STAGES: Final = [
+    {
+        "files": ["tracked.txt"],
+        "commands": [[sys.executable, "-c", "open('tracked.txt', 'w').write('{version}')"]],
+        "message": "chore: release {version}",
+    }
+]
+KEEP_PINS: Final = "To release without updating pins, run curtains with --keep-pins."
+
+
+@pytest.fixture
+def project(pinned: Setup, git_environment: dict[str, str]) -> Project:
+    environment = {
+        **git_environment,
+        **{key: os.environ[key] for key in ("PATH", "FAKE_GH_STATE", "FAKE_GH_LOG")},
+    }
+    result = Project(pinned, environment)
+    (pinned.root / ".gitignore").write_text("built\n")
+    (pinned.root / "install.sh").write_text("TOOL=v1.0.0\n")
+    built = "open('built', 'w').write('{version}')"
+    configure(
+        pinned,
+        references=[{"file": "install.sh", "pattern": "TOOL=v{version}"}],
+        after_update=[[sys.executable, "-c", built]],
+    )
+    write_policy(pinned.root, pins=["tool"], stages=STAGES)
+    result.commit_all("chore: pin tool")
+    tag(pinned.root, environment, "v0.1.0", push_branch=True)
+    return result
+
+
+def test_release_updates_an_outdated_pin_before_the_policy_stages(project: Project) -> None:
+    project.release()
+    assert project.remote_log()[:3] == [
+        "chore: release 0.1.1",
+        "fix: update tool to 1.1.0",
+        "chore: pin tool",
+    ]
+    assert project.git("describe", "--tags", "main") == "v0.1.1"
+    assert project.setup.stored()["version"] == "1.1.0"
+    assert project.setup.stored()["commit"] == NEW_COMMIT
+    assert (project.root / "install.sh").read_text() == "TOOL=v1.1.0\n"
+    assert (project.root / "built").read_text() == "1.1.0"
+
+
+def test_release_with_two_part_versions_bumps_minor_for_a_pin_update(project: Project) -> None:
+    write_policy(project.root, pins=["tool"], version_parts=2, initial_version="0.1")
+    project.commit_all("chore: use two-part versions")
+    tag(project.root, project.environment, "v0.1", push_branch=True)
+    project.release()
+    assert project.git("describe", "--tags", "main") == "v0.2"
+
+
+def test_release_with_current_pins_adds_no_pin_commit(
+    project: Project, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert project.setup.run("update", "tool") == 0
+    project.commit_all("fix: bundle tool 1.1.0")
+    capsys.readouterr()
+    project.release()
+    assert "Pins: current" in capsys.readouterr().out
+    assert project.remote_log()[:2] == ["chore: release 0.1.1", "fix: bundle tool 1.1.0"]
+
+
+def test_dry_run_previews_the_pin_update_without_writing(
+    project: Project, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = project.setup.pins_file.read_bytes()
+    capsys.readouterr()
+    project.release(dry_run=True)
+    output = capsys.readouterr().out
+    assert "Example: v0.1.0 -> v0.1.1" in output
+    assert "Pins: tool 1.0.0 -> 1.1.0" in output
+    assert project.setup.pins_file.read_bytes() == before
+
+
+def test_keep_pins_releases_without_contacting_github(
+    project: Project, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project.root / "tracked.txt").write_text("fix\n")
+    project.commit_all("fix: change")
+    calls = project.setup.log.read_text()
+    capsys.readouterr()
+    project.release(keep_pins=True)
+    assert "Pins: not checked (--keep-pins)" in capsys.readouterr().out
+    assert project.setup.log.read_text() == calls
+    assert project.remote_log()[:2] == ["chore: release 0.1.1", "fix: change"]
+    assert project.setup.stored()["version"] == "1.0.0"
+
+
+def test_keep_pins_with_only_a_pin_update_has_nothing_to_release(project: Project) -> None:
+    with pytest.raises(ReleaseError, match="no relevant commits"):
+        project.release(keep_pins=True)
+
+
+def test_failed_pin_follow_up_leaves_the_update_for_review(project: Project) -> None:
+    configure(project.setup, after_update=[[sys.executable, "-c", "raise SystemExit(3)"]])
+    project.commit_all("chore: break the follow-up")
+    refs = project.remote_refs()
+    with pytest.raises(ReleaseError) as raised:
+        project.release()
+    message = str(raised.value)
+    assert message.startswith("Updating tool to 1.1.0 failed: ")
+    assert "discard the preparation changes and run curtains with --keep-pins." in message
+    assert message.endswith(
+        "Branch main is unchanged; uncommitted changes: 'install.sh', 'scripts/pins.json'."
+    )
+    assert project.setup.stored()["version"] == "1.1.0"
+    assert project.remote_refs() == refs
+
+
+def test_pin_follow_up_may_change_the_pin_files(project: Project) -> None:
+    (project.root / "lock.txt").write_text("1.0.0\n")
+    configure(
+        project.setup,
+        files=["lock.txt"],
+        after_update=[[sys.executable, "-c", "open('lock.txt', 'w').write('{version}')"]],
+    )
+    project.commit_all("chore: lock the tool")
+    project.release()
+    changed = project.git("show", "--format=", "--name-only", "main~1").splitlines()
+    assert changed == ["install.sh", "lock.txt", "scripts/pins.json"]
+    assert (project.root / "lock.txt").read_text() == "1.1.0"
+
+
+def test_pin_follow_up_changing_an_undeclared_file_stops_the_release(project: Project) -> None:
+    (project.root / "lock.txt").write_text("1.0.0\n")
+    configure(
+        project.setup,
+        after_update=[[sys.executable, "-c", "open('lock.txt', 'w').write('{version}')"]],
+    )
+    project.commit_all("chore: lock the tool")
+    with pytest.raises(
+        ReleaseError, match=re.escape("Preparation changed undeclared paths: 'lock.txt'")
+    ):
+        project.release()
+
+
+def test_pin_lookup_failure_stops_the_release(project: Project) -> None:
+    project.environment["FAKE_GH_ERROR"] = "HTTP 502: Bad Gateway"
+    refs = project.remote_refs()
+    with pytest.raises(ReleaseError) as raised:
+        project.release()
+    assert str(raised.value) == (
+        "Cannot check pin tool: gh release view --repo o/tool failed (1): HTTP 502: Bad Gateway\n"
+        + KEEP_PINS
+    )
+    assert project.remote_refs() == refs
+
+
+def test_release_names_a_policy_pin_missing_from_the_pins_file(project: Project) -> None:
+    write_policy(project.root, pins=["tool", "other"])
+    project.commit_all("chore: pin other")
+    with pytest.raises(ReleaseError) as raised:
+        project.release()
+    assert str(raised.value) == (
+        f"Pins named in the policy are missing from scripts/pins.json: 'other'.\n{KEEP_PINS}"
+    )
+
+
+def test_suggestion_without_a_bump_still_releases_a_pin_update(project: Project) -> None:
+    write_policy(
+        project.root,
+        pins=["tool"],
+        suggest=[sys.executable, "-c", "print('0.1.0')"],
+        stages=STAGES,
+    )
+    project.commit_all("chore: suggest versions")
+    project.release()
+    assert project.git("describe", "--tags", "main") == "v0.1.1"
+
+
+def test_pin_update_releases_outside_the_history_paths(project: Project) -> None:
+    write_policy(project.root, pins=["tool"], history_paths=["src"], stages=STAGES)
+    project.commit_all("chore: scope history")
+    project.release()
+    assert project.remote_log()[:2] == ["chore: release 0.1.1", "fix: update tool to 1.1.0"]
+
+
+@pytest.fixture
+def two_pins(project: Project) -> Project:
+    state = json.loads(project.setup.state.read_text())
+    state[OTHER_REPOSITORY] = {
+        "latest": "v2.1.0",
+        "releases": {
+            "v2.0.0": {"commit": OLD_COMMIT, "assets": {"other.tar.gz": "other 2.0.0"}},
+            "v2.1.0": {"commit": NEW_COMMIT, "assets": {"other.tar.gz": "other 2.1.0"}},
+        },
+    }
+    project.setup.state.write_text(json.dumps(state))
+    assert (
+        project.setup.run("add", "other", OTHER_REPOSITORY, "other.tar.gz", "--version", "2.0.0")
+        == 0
+    )
+    write_policy(project.root, pins=["tool", "other"], stages=STAGES)
+    project.commit_all("chore: pin other")
+    return project
+
+
+def test_release_updates_every_outdated_pin(
+    two_pins: Project, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capsys.readouterr()
+    two_pins.release()
+    output = capsys.readouterr().out
+    assert "Pins: tool 1.0.0 -> 1.1.0; other 2.0.0 -> 2.1.0" in output
+    assert "Changes: 0 feature(s), 2 fix(es) (2 from pin updates), 0 breaking change(s)" in output
+    assert two_pins.remote_log()[:3] == [
+        "chore: release 0.1.1",
+        "fix: update other to 2.1.0",
+        "fix: update tool to 1.1.0",
+    ]
+
+
+def test_release_counts_pin_updates_among_the_fixes(
+    project: Project, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project.root / "tracked.txt").write_text("fix\n")
+    project.commit_all("fix: change")
+    capsys.readouterr()
+    project.release(dry_run=True)
+    assert (
+        "Changes: 0 feature(s), 2 fix(es) (1 from pin updates), 0 breaking change(s)"
+        in capsys.readouterr().out
+    )
+
+
+def test_failed_pin_lookup_names_only_the_failed_pin(two_pins: Project) -> None:
+    state = json.loads(two_pins.setup.state.read_text())
+    state[OTHER_REPOSITORY]["latest"] = "v9.9.9"
+    two_pins.setup.state.write_text(json.dumps(state))
+    with pytest.raises(ReleaseError) as raised:
+        two_pins.release()
+    assert str(raised.value) == (
+        f"Cannot check pin other: o/other has no published release.\n{KEEP_PINS}"
+    )
+
+
+def test_every_failed_pin_lookup_is_reported(two_pins: Project) -> None:
+    state = json.loads(two_pins.setup.state.read_text())
+    state[REPOSITORY]["latest"] = state[OTHER_REPOSITORY]["latest"] = "v9.9.9"
+    two_pins.setup.state.write_text(json.dumps(state))
+    with pytest.raises(ReleaseError) as raised:
+        two_pins.release()
+    assert str(raised.value) == (
+        "Cannot check pin tool: o/tool has no published release.\n"
+        "Cannot check pin other: o/other has no published release.\n" + KEEP_PINS
+    )
+
+
+def test_failed_later_pin_keeps_the_earlier_pin_commit(two_pins: Project) -> None:
+    configure(two_pins.setup, "other", after_update=[[sys.executable, "-c", "raise SystemExit(5)"]])
+    two_pins.commit_all("chore: break the other follow-up")
+    refs = two_pins.remote_refs()
+    with pytest.raises(ReleaseError) as raised:
+        two_pins.release()
+    message = str(raised.value)
+    assert message.startswith("Updating other to 2.1.0 failed: ")
+    assert "(1 new commit); uncommitted changes: 'scripts/pins.json'." in message
+    assert two_pins.git("log", "-1", "--format=%s") == "fix: update tool to 1.1.0"
+    assert two_pins.remote_refs() == refs
+
+
+def test_cli_keep_pins_flag(project: Project, capsys: pytest.CaptureFixture[str]) -> None:
+    (project.root / "tracked.txt").write_text("fix\n")
+    project.commit_all("fix: change")
+    capsys.readouterr()
+    assert cli.main(["--directory", str(project.root), "--dry-run", "--keep-pins"]) == 0
+    assert "Pins: not checked (--keep-pins)" in capsys.readouterr().out
+
+
+def test_interactive_override_keeps_counting_the_pin_update(
+    project: Project, capsys: pytest.CaptureFixture[str]
+) -> None:
+    answers = iter(["minor", "y"])
+    capsys.readouterr()
+    run_release(
+        project.root,
+        load_config(project.root / "scripts/release.json"),
+        ReleaseRequest(version=None, dry_run=False, yes=False, keep_pins=False),
+        project.environment,
+        prompt=lambda _: next(answers),
+    )
+    output = capsys.readouterr().out
+    expected = "Changes: 0 feature(s), 1 fix(es) (1 from pin updates), 0 breaking change(s)"
+    assert output.count(expected) == 2
+    assert output.count("Pins: tool 1.0.0 -> 1.1.0") == 2
+    assert project.remote_log()[:2] == ["chore: release 0.2.0", "fix: update tool to 1.1.0"]
+
+
+def test_release_stage_update_reports_only_the_failed_command(
+    pinned: Setup, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure(pinned, after_update=[[sys.executable, "-c", "raise SystemExit(4)"]])
+    assert pinned.run("update", "--release-stage", "--", "tool", "v1.1.0") == 1
+    assert capsys.readouterr().err.endswith("-c 'raise SystemExit(4)' failed (4)\n")
+
+
+def test_release_stage_update_prints_no_commit_advice(
+    pinned: Setup, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capsys.readouterr()
+    assert pinned.run("update", "--release-stage", "--", "tool", "v1.1.0") == 0
+    assert capsys.readouterr().out == "Pinned tool 1.0.0 -> 1.1.0.\n"

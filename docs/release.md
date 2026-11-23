@@ -6,19 +6,19 @@ Use Git 2.45+ and a server supporting atomic pushes. The worktree must be clean,
 
 Inspection reads `ls-remote` without fetching. The remote release branch must already exist locally as an object and be an ancestor of HEAD. Missing objects fail, including in partial clones with lazy fetching disabled. Fetch or repair deliberately outside the release command, then restart.
 
-Every canonical release tag in the configured prefix must exist both locally and remotely and peel to the same commit, including old tags. The newest version must be an ancestor of HEAD. Tags with another number of version parts, unrelated tags and prerelease-shaped tags are ignored. There must be relevant commits since the latest release, even for an explicit override. Scoped history affects proposals, while the displayed ahead count includes all branch commits.
+Every canonical release tag in the configured prefix must exist both locally and remotely and peel to the same commit, including old tags. The newest version must be an ancestor of HEAD. Tags with another number of version parts, unrelated tags and prerelease-shaped tags are ignored. There must be relevant commits since the latest release, or a pending [pin update](#pins-in-a-release), even for an explicit override. Scoped history affects proposals, while the displayed ahead count includes all branch commits.
 
 Two uncommon inspection limitations remain: a relevant commit range containing only empty messages is rejected, even with a version override; ref names containing Unicode line separators can cause inspection to fail.
 
 ## Invocation
 
-`curtains [patch|minor|major|VERSION] [--config PATH] [--directory DIR] [--dry-run] [--yes]`.
+`curtains [patch|minor|major|VERSION] [--config PATH] [--directory DIR] [--dry-run] [--yes] [--keep-pins]`.
 
 Bare invocation previews a proposal, runs preflight commands, then asks for confirmation. Enter or `n` cancels; entering a version or bump keyword previews it again before confirmation, and an entry that is not a valid version prints why and asks again. Non-terminal use requires `--yes`; without it a real run stops before any configured command runs. If no automatic bump exists, `--yes` prints `No automatic release; supply a version override to release these changes.` and exits 3 without running preflight commands; provide an override. `--version` prints the curtains version, never a release version. `--help` and `--version` work outside Git repositories.
 
-The summary shows the previous and proposed release tags, the number of commits since the previous release (or repository start), change counts, a signing requirement when `sign` is enabled, and lists of feature and breaking-change commit subjects. It repeats after checks so it sits directly above confirmation. Commit counts and lists respect `history_paths`; the ahead-of-origin count covers the whole branch. Breaking changes use the same conventional-commit rules as version selection: a `!` header or a `BREAKING CHANGE:` / `BREAKING-CHANGE:` line in a conventional commit. A breaking feature appears in both lists.
+The summary shows the previous and proposed release tags, the number of commits since the previous release (or repository start), a `Pins:` line when the policy names pins, change counts (fixes include pending pin updates, counted separately in brackets), a signing requirement when `sign` is enabled, and lists of feature and breaking-change commit subjects. It repeats after checks so it sits directly above confirmation. Commit counts and lists respect `history_paths`; the ahead-of-origin count covers the whole branch. Breaking changes use the same conventional-commit rules as version selection: a `!` header or a `BREAKING CHANGE:` / `BREAKING-CHANGE:` line in a conventional commit. A breaking feature appears in both lists.
 
-Dry-run uses read-only inspection and contacts origin. It skips tool requirements and every configured command, including preflight checks, preparation and custom suggestions. A skipped custom suggestion produces a labelled built-in estimate; it is not the custom tool's result.
+Dry-run uses read-only inspection and contacts origin, and GitHub through `gh` when the policy names pins. It skips tool requirements and every configured command, including preflight checks, preparation and custom suggestions. A skipped custom suggestion produces a labelled built-in estimate; it is not the custom tool's result.
 
 Preflight commands run before confirmation and are trusted commands: they may leave artifacts even if you cancel afterward. A cancellation, EOF or interruption before preparation returns 0. An interruption during preparation or tagging prints `Release cancelled before the push.` with a summary of what was left (see [Failure handling](#failure-handling)) and returns 130 when preparation left commits, a moved or deleted release branch, a switched HEAD, a tag or uncommitted changes, or when that state could not be inspected; otherwise it returns 0. Failures return 1; argument usage errors return 2; an unattended run with nothing to release returns 3. An interruption during the push is a push failure with uncertain outcome.
 
@@ -30,7 +30,15 @@ The engine preserves local work: prepared files, commits and any created annotat
 
 If the push fails or is interrupted, the remote outcome may be unknown. Inspect the remote branch and tag (including the tag's peeled target), compare them with the prepared local commit and tag object, and decide explicitly what to do. Do not assume the remote is unchanged or rerun blindly. Unsupported atomic push is an error; the engine never falls back.
 
-With `repository`/`workflow` configured, success prints GitHub tag/workflow links and says publication runs asynchronously. `draft` adds a review link. The release command itself does not invoke `gh`, create releases, wait for Actions, sign artifacts, upload packages or publish drafts; the consumer's tag-triggered workflow owns those steps. Inside that workflow, [`curtains ci`](#ci-commands) validates the tag and creates and verifies the GitHub release.
+With `repository`/`workflow` configured, success prints GitHub tag/workflow links and says publication runs asynchronously. `draft` adds a review link. Apart from updating policy pins, the release command does not invoke `gh`, create releases, wait for Actions, sign artifacts, upload packages or publish drafts; the consumer's tag-triggered workflow owns those steps. Inside that workflow, [`curtains ci`](#ci-commands) validates the tag and creates and verifies the GitHub release.
+
+## Pins in a release
+
+When the policy lists [`pins`](configuration.md#top-level-fields), the release looks up each named pin's latest GitHub release with `gh` right after inspection, on a dry run too. The summary shows `Pins: NAME OLD -> NEW` for each pin behind its latest release, or `Pins: current`. Each pending update counts as one fix, so it is enough to release on its own: a patch bump, or minor for `MAJOR.MINOR` policies. When a `suggest` command returns a version that is not newer than the latest release, pending pin updates fall back to the built-in bump.
+
+After preflight checks and confirmation, one stage per outdated pin runs before the policy's stages. It runs [`curtains pins update`](pins.md) for the previewed version, which records the new commit and digests, rewrites the pin's references and runs its `after_update` commands, then commits the result as `fix: update NAME to VERSION`. The stage may change only `scripts/pins.json`, the pin's reference files and its declared `files`; other `after_update` output must be ignored by Git. A failed pin stage is handled like any other failed stage: its changes stay in place, and the error names the pin and suggests discarding the preparation changes and releasing with `--keep-pins`.
+
+`--keep-pins` skips the lookup and the pin stages, and the summary shows `Pins: not checked (--keep-pins)`. A failed lookup, or a policy pin that `scripts/pins.json` does not define, stops the release before preflight checks with the same hint.
 
 ## CI commands
 

@@ -218,8 +218,6 @@ def inspect_repository(
         environment,
     )
     messages = tuple(message.strip() for message in output.split("\0")[:-1])
-    if not any(messages):
-        raise ReleaseError("There are no relevant commits to release.")
     ahead = int(
         git_command(root, ("rev-list", "--count", f"{remote_branch}..{head}"), environment).strip()
     )

@@ -61,7 +61,7 @@ def run_release(  # noqa: PLR0913
     release(
         root,
         config,
-        ReleaseRequest(version=version, dry_run=dry_run, yes=yes),
+        ReleaseRequest(version=version, dry_run=dry_run, yes=yes, keep_pins=False),
         environment,
         prompt=prompt,
     )
@@ -984,6 +984,21 @@ def test_sign_without_key_fails_before_commands(
     assert git(repository, git_environment, "status", "--porcelain") == ""
     assert remote_refs(repository, git_environment) == before
     assert git(repository, git_environment, "tag", "--list") == ""
+
+
+@pytest.mark.parametrize("released", [True, False])
+def test_history_outside_the_scope_has_nothing_to_release(
+    repository: Path, config: ReleaseConfig, git_environment: dict[str, str], released: bool
+) -> None:
+    if released:
+        git(repository, git_environment, "tag", "v0.1.0")
+        git(repository, git_environment, "push", "origin", "refs/tags/v0.1.0")
+        (repository / "tracked.txt").write_text("outside\n")
+        git(repository, git_environment, "commit", "-am", "fix: outside the scope")
+    with pytest.raises(ReleaseError, match="no relevant commits"):
+        run_release(
+            repository, replace(config, history_paths=("missing",)), git_environment, dry_run=True
+        )
 
 
 def test_override_requires_relevant_history(

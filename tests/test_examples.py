@@ -82,7 +82,7 @@ def test_policy_dimensions_with_synthetic_tools(
     release(
         repository,
         config,
-        ReleaseRequest(version=None, dry_run=False, yes=True),
+        ReleaseRequest(version=None, dry_run=False, yes=True, keep_pins=False),
         git_environment,
         prompt=None,
     )

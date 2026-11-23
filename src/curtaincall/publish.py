@@ -18,7 +18,7 @@ from curtaincall.git import (
     tag_targets,
 )
 from curtaincall.models import ReleaseConfig
-from curtaincall.process import ProcessResult, process_failure, run_process
+from curtaincall.process import ProcessResult, gh_environment, process_failure, run_process
 from curtaincall.versions import require_release_tag, version_text
 
 _GH_PATH_SYNTAX: Final = re.compile(r"[#*?\[]")
@@ -335,7 +335,7 @@ def publish(
     github = _GitHub(
         root,
         config.repository,
-        {**environment, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"},
+        gh_environment(environment),
     )
     tag = publication.tag
     body = read_notes(publication.notes)

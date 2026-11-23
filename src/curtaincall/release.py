@@ -3,8 +3,9 @@ import shlex
 import shutil
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Final
 from urllib.parse import quote, urlencode
 
 from curtaincall.errors import NothingToRelease, ReleaseCancelled, ReleaseError, short_id
@@ -21,6 +22,7 @@ from curtaincall.git import (
 from curtaincall.inspection import inspect_repository, inspect_snapshot
 from curtaincall.leftovers import collect_leftovers, describe_leftovers
 from curtaincall.models import (
+    PinUpdate,
     Proposal,
     RefSnapshot,
     ReleaseConfig,
@@ -29,6 +31,7 @@ from curtaincall.models import (
     RepositorySnapshot,
     Version,
 )
+from curtaincall.pins import pending_updates, pin_message, pin_stage
 from curtaincall.process import run_command
 from curtaincall.stages import prepare
 from curtaincall.versions import (
@@ -127,7 +130,40 @@ def _require_signing(root: Path, environment: Mapping[str, str]) -> None:
         raise ReleaseError(f"The policy requires signing, but Git cannot sign: {error}") from error
 
 
-def _preview(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> None:
+_KEEP_PINS: Final = "To release without updating pins, run curtains with --keep-pins."
+
+
+@dataclass(frozen=True, slots=True)
+class _PinPlan:
+    updates: tuple[PinUpdate, ...]
+    summary: str | None
+
+    @property
+    def messages(self) -> tuple[str, ...]:
+        return tuple(pin_message(update) for update in self.updates)
+
+
+def _pin_plan(
+    root: Path, config: ReleaseConfig, request: ReleaseRequest, environment: Mapping[str, str]
+) -> _PinPlan:
+    if not config.pins:
+        return _PinPlan((), None)
+    if request.keep_pins:
+        return _PinPlan((), "Pins: not checked (--keep-pins)")
+    try:
+        updates = pending_updates(root, config.pins, environment)
+    except ReleaseError as error:
+        raise ReleaseError(f"{error}\n{_KEEP_PINS}") from error
+    summary = "; ".join(
+        f"{update.pin.name} {format_version(update.pin.version)} -> {format_version(update.latest)}"
+        for update in updates
+    )
+    return _PinPlan(updates, f"Pins: {summary or 'current'}")
+
+
+def _preview(
+    config: ReleaseConfig, state: ReleaseState, proposal: Proposal, pins: _PinPlan
+) -> None:
     version = (
         release_tag(config, proposal.version)
         if proposal.version is not None
@@ -141,8 +177,12 @@ def _preview(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> 
     print(f"Branch: {config.branch}; {state.ahead} commit(s) ahead of origin")
     if config.sign:
         print("Signing: required for preparation commits and the release tag")
+    if pins.summary is not None:
+        print(pins.summary)
+    from_pins = f" ({len(pins.updates)} from pin updates)" if pins.updates else ""
     print(
-        f"Changes: {proposal.counts.features} feature(s), {proposal.counts.fixes} fix(es), "
+        f"Changes: {proposal.counts.features} feature(s), "
+        f"{proposal.counts.fixes} fix(es){from_pins}, "
         f"{proposal.counts.breaking} breaking change(s)"
     )
     if proposal.suggestion_skipped and config.suggest is not None:
@@ -158,7 +198,11 @@ def _preview(config: ReleaseConfig, state: ReleaseState, proposal: Proposal) -> 
 
 
 def _confirm(
-    config: ReleaseConfig, state: ReleaseState, proposal: Proposal, prompt: Prompt
+    config: ReleaseConfig,
+    state: ReleaseState,
+    proposal: Proposal,
+    prompt: Prompt,
+    pins: _PinPlan,
 ) -> Version | None:
     candidate = proposal.version
     while True:
@@ -175,7 +219,14 @@ def _confirm(
         except ReleaseError as error:
             print(error)
             continue
-        _preview(config, state, make_proposal(config, state, override=format_version(candidate)))
+        _preview(
+            config,
+            state,
+            make_proposal(
+                config, state, override=format_version(candidate), pending_messages=pins.messages
+            ),
+            pins,
+        )
 
 
 def _create_tag(
@@ -222,15 +273,36 @@ def _push(
         ) from error
 
 
+def _update_pin(
+    root: Path,
+    config: ReleaseConfig,
+    update: PinUpdate,
+    version: Version,
+    environment: Mapping[str, str],
+) -> None:
+    stage = pin_stage(update)
+    try:
+        prepare(root, replace(config, stages=(stage,)), version, sys.executable, environment)
+    except ReleaseError as error:
+        raise ReleaseError(
+            f"Updating {update.pin.name} to {format_version(update.latest)} failed: {error}\n"
+            "To release without updating pins, discard the preparation changes and run "
+            "curtains with --keep-pins."
+        ) from error
+
+
 def _prepare_and_tag(
     root: Path,
     config: ReleaseConfig,
     reviewed: RepositorySnapshot,
     version: Version,
+    updates: tuple[PinUpdate, ...],
     environment: Mapping[str, str],
 ) -> _Prepared:
     tag = release_tag(config, version)
     try:
+        for update in updates:
+            _update_pin(root, config, update, version, environment)
         prepare(root, config, version, sys.executable, environment)
         prepared = head_commit(root, environment)
         _require_reviewed(reviewed, inspect_snapshot(root, config, environment), prepared)
@@ -284,6 +356,9 @@ def release(
             "Interactive confirmation requires a terminal; use --yes for unattended releases."
         )
     reviewed = inspect_repository(root, config, environment)
+    pins = _pin_plan(root, config, request, environment)
+    if not any(reviewed.messages) and not pins.updates:
+        raise ReleaseError("There are no relevant commits to release.")
     use_suggestion = (
         config.suggest is not None and reviewed.latest is not None and request.version is None
     )
@@ -299,8 +374,9 @@ def release(
         if use_suggestion and not request.dry_run
         else None,
         suggestion_skipped=request.dry_run and use_suggestion,
+        pending_messages=pins.messages,
     )
-    _preview(config, reviewed, proposal)
+    _preview(config, reviewed, proposal, pins)
     if request.dry_run:
         print("Dry run: checks, preparation, tagging and publication skipped.")
         return
@@ -312,17 +388,17 @@ def release(
         print(f"Checking: {shlex.join(command)}", flush=True)
         run_command(root, command, environment, capture=False)
     if config.preflight:
-        _preview(config, reviewed, proposal)
+        _preview(config, reviewed, proposal, pins)
     version = (
         proposal.version
         if request.yes or prompt is None
-        else _confirm(config, reviewed, proposal, prompt)
+        else _confirm(config, reviewed, proposal, prompt, pins)
     )
     if version is None:
         return
     snapshot = reviewed.snapshot
     _require_reviewed(snapshot, inspect_snapshot(root, config, environment), snapshot.head)
-    prepared = _prepare_and_tag(root, config, snapshot, version, environment)
+    prepared = _prepare_and_tag(root, config, snapshot, version, pins.updates, environment)
     tag = release_tag(config, version)
     _push(
         root,

@@ -90,7 +90,7 @@ curtains pins update hooklinesinker        # new digests, rewritten references, 
 curtains pins fetch hooklinesinker --output build/vendor
 ```
 
-Each pin records the release version, its tag commit and every asset's sha256, so `fetch` verifies downloaded bytes against the committed digest. See [pins](docs/pins.md).
+Each pin records the release version, its tag commit and every asset's sha256, so `fetch` verifies downloaded bytes against the committed digest. Name a pin in the release policy's `pins` and every `curtains` release updates it first, committing `fix: update NAME to VERSION`; `--keep-pins` skips that. See [pins](docs/pins.md) and [pins in a release](docs/release.md#pins-in-a-release).
 
 ## Requirements
 

@@ -129,6 +129,28 @@ def test_override_must_increase(config: ReleaseConfig, value: str) -> None:
         select_version(config, value, (1, 2, 3))
 
 
+def test_pending_messages_count_as_changes(config: ReleaseConfig) -> None:
+    result = make_proposal(config, state("1.2.3"), pending_messages=("fix: update tool to 2.0.0",))
+    assert (text(result.version), result.counts.fixes) == ("1.2.4", 1)
+
+
+@pytest.mark.parametrize(
+    "messages,suggestion,expected",
+    [((), "1.2.3", "1.2.4"), (("feat: x",), "1.2.3", "1.3.0"), ((), "1.5.0", "1.5.0")],
+)
+def test_suggestion_without_a_bump_falls_back_for_pending_messages(
+    config: ReleaseConfig, messages: tuple[str, ...], suggestion: str, expected: str
+) -> None:
+    policy = replace(config, suggest=("custom",))
+    result = make_proposal(
+        policy,
+        state("1.2.3", *messages),
+        suggested=suggestion,
+        pending_messages=("fix: update tool to 2.0.0",),
+    )
+    assert text(result.version) == expected
+
+
 @pytest.mark.parametrize(
     "suggestion,expected", [("python-v1.3.0", "1.3.0"), ("1.2.3", None), ("1.0.0", None)]
 )

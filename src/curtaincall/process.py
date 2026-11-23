@@ -39,6 +39,10 @@ def command_environment(source: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+def gh_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    return {**environment, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+
+
 def redact_urls(value: str) -> str:
     return re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s]*@", r"\1[redacted]@", value)
 

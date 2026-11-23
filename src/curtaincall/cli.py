@@ -55,9 +55,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("version", nargs="?", metavar="patch|minor|major|VERSION")
     add_location_arguments(parser)
     parser.add_argument(
-        "--dry-run", action="store_true", help="Preview using read-only Git inspection"
+        "--dry-run",
+        action="store_true",
+        help="Preview the release without running checks or changing anything",
     )
     parser.add_argument("--yes", action="store_true", help="Confirm an unattended release")
+    parser.add_argument(
+        "--keep-pins",
+        action="store_true",
+        help="Release without checking or updating the policy's pins",
+    )
     parser.add_argument(
         "--version",
         action="version",
@@ -71,7 +78,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         release(
             location.root,
             load_config(location.config_path),
-            ReleaseRequest(version=args.version, dry_run=args.dry_run, yes=args.yes),
+            ReleaseRequest(
+                version=args.version,
+                dry_run=args.dry_run,
+                yes=args.yes,
+                keep_pins=args.keep_pins,
+            ),
             environment,
             prompt=input if sys.stdin.isatty() else None,
         )

@@ -505,21 +505,20 @@ def test_scoped_history_and_unscoped_ahead(
 
 
 @pytest.mark.parametrize("released", [True, False])
-def test_no_relevant_history_rejected(
+def test_history_outside_the_scope_has_no_messages(
     repository: Path, git_environment: dict[str, str], config: ReleaseConfig, released: bool
 ) -> None:
     if released:
         tag(repository, git_environment)
-    with pytest.raises(ReleaseError, match="no relevant commits"):
-        inspect_repository(repository, replace(config, history_paths=("missing",)), git_environment)
+    scoped = replace(config, history_paths=("missing",))
+    assert inspect_repository(repository, scoped, git_environment).messages == ()
 
 
-def test_no_commits_since_release_rejected(
+def test_no_commits_since_release_has_no_messages(
     repository: Path, git_environment: dict[str, str], config: ReleaseConfig
 ) -> None:
     tag(repository, git_environment)
-    with pytest.raises(ReleaseError, match="no relevant commits"):
-        inspect_repository(repository, config, git_environment)
+    assert inspect_repository(repository, config, git_environment).messages == ()
 
 
 def test_changed_paths_preserve_all_filename_bytes(

@@ -149,8 +149,9 @@ def make_proposal(
     override: str | None = None,
     suggested: str | None = None,
     suggestion_skipped: bool = False,
+    pending_messages: tuple[str, ...] = (),
 ) -> Proposal:
-    counts = count_changes(state.messages)
+    counts = count_changes((*state.messages, *pending_messages))
     if override is not None:
         return Proposal(select_version(config, override, state.latest), counts, False)
     if state.latest is None:
@@ -159,5 +160,8 @@ def make_proposal(
         if suggested is None:
             raise ReleaseError("The suggestion command did not return a version.")
         candidate = parse_version(_normalize_version(config, suggested), config.version_parts)
-        return Proposal(candidate if candidate > state.latest else None, counts, False)
+        if candidate > state.latest:
+            return Proposal(candidate, counts, False)
+        fallback = conventional_version(state.latest, counts) if pending_messages else None
+        return Proposal(fallback, counts, False)
     return Proposal(conventional_version(state.latest, counts), counts, suggestion_skipped)

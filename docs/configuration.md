@@ -23,6 +23,7 @@ Required-tool lookup uses the same root as command execution: relative `PATH` en
 | `tools` | Executables required for a real run; `[]`. Slash-containing names resolve from root. |
 | `preflight` | Preflight argv arrays; `[]`. Run once before confirmation. Unrelated to a stage's `checks`, which run after that stage's commands. |
 | `stages` | Sequential preparation stages; `[]` means tag only. |
+| `pins` | Names of pins in `scripts/pins.json` that every release updates first; `[]`. See [pins in a release](release.md#pins-in-a-release). |
 | `suggest` | Optional single argv array returning a canonical version, optionally prefixed. |
 | `success_message` | Line printed after a successful push; `Version tag pushed.` It does not configure `curtains ci publish`. |
 | `repository` | Optional GitHub `owner/name`; requires origin identity to match exactly. |
@@ -69,4 +70,4 @@ The preparation script is consumer-owned. The stage allowlist must cover everyth
 
 Without release tags, propose `initial_version`; a `patch`, `minor` or `major` override on a first release also selects `initial_version`. Otherwise `feat` bumps minor, `fix`/`perf` bumps patch, and a breaking conventional header or footer bumps major (minor while a three-part version is `0.x`). Two-part policies use minor for fixes and reject `patch`. Chores alone produce no automatic bump. Numeric components have no leading zeros; prereleases are unsupported.
 
-A CLI override accepts `patch`, `minor`, `major`, or a canonical version with an optional configured prefix. An existing release requires a strictly greater version and relevant commits even with an override. A real custom suggestion runs only after an existing release and without an override. Invalid or failing output aborts; a valid nonincreasing suggestion means no automatic bump. Dry-run skips it and labels its conventional estimate.
+A CLI override accepts `patch`, `minor`, `major`, or a canonical version with an optional configured prefix. An existing release requires a strictly greater version and relevant commits or a pending pin update, even with an override. A real custom suggestion runs only after an existing release and without an override. Invalid or failing output aborts; a valid nonincreasing suggestion means no automatic bump unless a pin update is pending, which falls back to the conventional bump. Dry-run skips it and labels its conventional estimate.

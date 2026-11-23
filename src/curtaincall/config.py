@@ -115,6 +115,10 @@ def template_values(
     }
 
 
+def literal_template(value: str) -> str:
+    return value.replace("{", "{{").replace("}", "}}")
+
+
 def validate_template(value: str, context: str, allowed: tuple[str, ...] = TEMPLATE_FIELDS) -> None:
     try:
         parsed = tuple(Formatter().parse(value))
@@ -238,6 +242,22 @@ def _tag_policy(obj: dict[str, object]) -> _TagPolicy:
     )
 
 
+def _pin_name(name: str, context: str) -> str:
+    if not PIN_NAME.fullmatch(name):
+        raise ReleaseError(f"{context}: pin names use lowercase letters, digits, '-' and '_'")
+    return name
+
+
+def _pin_names(value: object, context: str) -> tuple[str, ...]:
+    names = tuple(
+        _pin_name(name, f"{context}[{i}]") for i, name in enumerate(_strings(value, context))
+    )
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ReleaseError(f"{context}: duplicate pin names: {', '.join(duplicates)}")
+    return names
+
+
 def _read_policy(path: Path, allowed: frozenset[str] | None) -> dict[str, object]:
     try:
         raw: object = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_Object)
@@ -270,6 +290,7 @@ def load_config(path: Path) -> ReleaseConfig:
         suggest=None if "suggest" not in obj else _command(obj["suggest"], "policy.suggest"),
         draft=tag.draft,
         sign=_boolean(obj, "sign"),
+        pins=_pin_names(obj.get("pins", []), "policy.pins"),
     )
 
 
@@ -291,6 +312,7 @@ def load_tag_policy(path: Path) -> ReleaseConfig:
         suggest=None,
         draft=tag.draft,
         sign=False,
+        pins=(),
     )
 
 
@@ -312,7 +334,16 @@ def validate_paths(root: Path, config: ReleaseConfig) -> None:
 
 
 _PIN_KEYS: Final = frozenset(
-    {"repository", "tag_prefix", "version", "commit", "assets", "references", "after_update"}
+    {
+        "repository",
+        "tag_prefix",
+        "version",
+        "commit",
+        "assets",
+        "references",
+        "files",
+        "after_update",
+    }
 )
 _REFERENCE_KEYS: Final = frozenset(field.name for field in fields(PinReference))
 
@@ -346,8 +377,7 @@ def _pin_reference(value: object, context: str) -> PinReference:
 
 def _pin(name: str, value: object) -> Pin:
     context = f"pins.{name}"
-    if not PIN_NAME.fullmatch(name):
-        raise ReleaseError(f"{context}: pin names use lowercase letters, digits, '-' and '_'")
+    _pin_name(name, context)
     obj = _object(value, context, _PIN_KEYS)
     repository = _string(obj.get("repository"), f"{context}.repository")
     if not REPOSITORY.fullmatch(repository):
@@ -378,6 +408,7 @@ def _pin(name: str, value: object) -> Pin:
             _pin_reference(item, f"{context}.references[{i}]")
             for i, item in enumerate(_array(obj.get("references", []), f"{context}.references"))
         ),
+        files=_paths(obj.get("files", []), f"{context}.files"),
         after_update=_commands(
             obj.get("after_update", []), f"{context}.after_update", template=PIN_COMMAND_FIELDS
         ),
@@ -415,6 +446,7 @@ def _pin_json(pin: Pin) -> dict[str, object]:
             if pin.references
             else {}
         ),
+        **({"files": list(pin.files)} if pin.files else {}),
         **(
             {"after_update": [list(command) for command in pin.after_update]}
             if pin.after_update

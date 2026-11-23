@@ -77,6 +77,9 @@ def test_config_is_immutable(config: ReleaseConfig) -> None:
         ({"suggest": None}, "suggest"),
         ({"stages": [{}]}, "stages"),
         ({"stages": ["echo"]}, "stages"),
+        ({"pins": "tool"}, "pins: expected an array"),
+        ({"pins": ["tool", "Tool"]}, r"policy.pins\[1\]: pin names use lowercase"),
+        ({"pins": ["tool", "x", "tool"]}, "policy.pins: duplicate pin names: tool$"),
     ],
 )
 def test_invalid_fields(tmp_path: Path, extra: dict[str, object], context: str) -> None:
@@ -273,3 +276,11 @@ def test_template_values_cover_every_template_field(config: ReleaseConfig) -> No
         "tag": "v1.2.3",
         "tag_prefix": "v",
     }
+
+
+def test_policy_pins(tmp_path: Path) -> None:
+    path = tmp_path / "release.json"
+    path.write_text(
+        json.dumps({"name": "Example", "initial_version": "0.1.0", "pins": ["tool", "other_2"]})
+    )
+    assert load_config(path).pins == ("tool", "other_2")

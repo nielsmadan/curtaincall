@@ -34,6 +34,7 @@ class ReleaseConfig:
     suggest: Command | None
     draft: bool
     sign: bool
+    pins: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,7 @@ class ReleaseRequest:
     version: str | None
     dry_run: bool
     yes: bool
+    keep_pins: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,4 +110,11 @@ class Pin:
     commit: str
     assets: tuple[PinAsset, ...]
     references: tuple[PinReference, ...]
+    files: tuple[str, ...]
     after_update: tuple[Command, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PinUpdate:
+    pin: Pin
+    latest: Version

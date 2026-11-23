@@ -2,9 +2,11 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
@@ -18,6 +20,7 @@ from curtaincall.config import (
     REPOSITORY,
     asset_name,
     dump_pins,
+    literal_template,
     load_pins,
     parse_pins,
     validate_asset_template,
@@ -25,10 +28,11 @@ from curtaincall.config import (
 )
 from curtaincall.errors import ReleaseError, name_list
 from curtaincall.git import resolve_location
-from curtaincall.models import Command, Pin, PinAsset, PinReference, Version
+from curtaincall.models import Command, Pin, PinAsset, PinReference, PinUpdate, Stage, Version
 from curtaincall.process import (
     ProcessResult,
     command_environment,
+    gh_environment,
     process_failure,
     run_command,
     run_process,
@@ -152,6 +156,38 @@ def after_update_commands(pin: Pin) -> tuple[Command, ...]:
     values = {"version": format_version(pin.version), "tag": pin_tag(pin.tag_prefix, pin.version)}
     return tuple(
         tuple(argument.format(**values) for argument in command) for command in pin.after_update
+    )
+
+
+def pin_files(pin: Pin, pins_file: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys((pins_file, *(reference.file for reference in pin.references), *pin.files))
+    )
+
+
+def pin_message(update: PinUpdate) -> str:
+    return f"fix: update {update.pin.name} to {format_version(update.latest)}"
+
+
+def pin_stage(update: PinUpdate) -> Stage:
+    pin = update.pin
+    return Stage(
+        files=pin_files(pin, DEFAULT_FILE),
+        commands=(
+            (
+                "{python}",
+                "-m",
+                "curtaincall",
+                "pins",
+                "update",
+                "--release-stage",
+                "--",
+                pin.name,
+                literal_template(pin_tag(pin.tag_prefix, update.latest)),
+            ),
+        ),
+        checks=(),
+        message=literal_template(pin_message(update)),
     )
 
 
@@ -304,11 +340,39 @@ def _check_one(github: _GitHub, pin: Pin) -> CheckResult:
         return CheckResult(pin, None, str(error))
 
 
+def _check_all(github: _GitHub, pins: Sequence[Pin]) -> list[CheckResult]:
+    with ThreadPoolExecutor() as pool:
+        return list(pool.map(lambda pin: _check_one(github, pin), pins))
+
+
+def pending_updates(
+    root: Path, names: Sequence[str], environment: Mapping[str, str]
+) -> tuple[PinUpdate, ...]:
+    pins = {pin.name: pin for pin in load_pins(root / DEFAULT_FILE)}
+    missing = [name for name in names if name not in pins]
+    if missing:
+        raise ReleaseError(
+            f"Pins named in the policy are missing from {DEFAULT_FILE}: "
+            f"{name_list(map(repr, missing))}."
+        )
+    results = _check_all(_GitHub(root, gh_environment(environment)), [pins[name] for name in names])
+    failed = [result for result in results if result.error is not None]
+    if failed:
+        raise ReleaseError(
+            "\n".join(f"Cannot check pin {result.pin.name}: {result.error}" for result in failed)
+        )
+    return tuple(
+        PinUpdate(result.pin, result.latest)
+        for result in results
+        if result.latest is not None and result.outdated
+    )
+
+
 def _check(context: _Context, args: argparse.Namespace) -> int:
     selected = [context.find(name) for name in args.names] if args.names else context.pins
     if not selected:
         raise ReleaseError(f"No pins in {context.path}; add one with 'curtains pins add'.")
-    results = [_check_one(context.github, pin) for pin in selected]
+    results = _check_all(context.github, selected)
     if args.json:
         sys.stdout.write(check_json(results))
     else:
@@ -320,14 +384,8 @@ def _check(context: _Context, args: argparse.Namespace) -> int:
 
 def _run_after_update(context: _Context, pin: Pin) -> None:
     for command in after_update_commands(pin):
-        print(f"Running {' '.join(command)}", flush=True)
-        try:
-            run_command(context.root, command, context.environment, capture=False)
-        except ReleaseError as error:
-            raise ReleaseError(
-                f"Pinned {pin.name} {format_version(pin.version)}, but a follow-up command "
-                f"failed: {error}. The updated files are left for review."
-            ) from error
+        print(f"Running: {shlex.join(command)}", flush=True)
+        run_command(context.root, command, context.environment, capture=False)
 
 
 def _update(context: _Context, args: argparse.Namespace) -> int:
@@ -371,9 +429,17 @@ def _update(context: _Context, args: argparse.Namespace) -> int:
         _write_text(files[file], text)
     _write_text(context.path, content)
     print(f"Pinned {pin.name} {format_version(pin.version)} -> {format_version(version)}.")
-    _run_after_update(context, updated)
-    changed = [context.relative(context.path), *files]
-    print(f"Review and commit: {', '.join(changed)}")
+    if args.release_stage:
+        _run_after_update(context, updated)
+        return 0
+    try:
+        _run_after_update(context, updated)
+    except ReleaseError as error:
+        raise ReleaseError(
+            f"Pinned {pin.name} {format_version(version)}, but a follow-up command "
+            f"failed: {error}. The updated files are left for review."
+        ) from error
+    print(f"Review and commit: {', '.join(pin_files(pin, context.relative(context.path)))}")
     return 0
 
 
@@ -398,6 +464,7 @@ def _add(context: _Context, args: argparse.Namespace) -> int:
         commit=context.github.commit(args.repository, release.tag),
         assets=_release_assets(context.github, args.repository, args.assets, release, version),
         references=(),
+        files=(),
         after_update=(),
     )
     _write_text(context.path, context.render((*context.pins, pin)))
@@ -469,6 +536,7 @@ def _parser() -> argparse.ArgumentParser:
     _location_arguments(update, defaults=False)
     update.add_argument("name", metavar="NAME")
     update.add_argument("version", nargs="?", metavar="VERSION")
+    update.add_argument("--release-stage", action="store_true", help=argparse.SUPPRESS)
     update.set_defaults(handler=_update)
     add = commands.add_parser(
         "add",
@@ -511,10 +579,7 @@ def main(argv: Sequence[str]) -> int:
             location.root,
             location.config_path,
             load_pins(location.config_path),
-            _GitHub(
-                location.root,
-                {**environment, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"},
-            ),
+            _GitHub(location.root, gh_environment(environment)),
             environment,
         )
         code: int = args.handler(context, args)
